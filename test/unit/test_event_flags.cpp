@@ -203,3 +203,29 @@ UT_TEST(event_flags, set_wakes_nobody_but_waiters)
     ut::proc(2, []{ OS::sleep(5); F.set(0x3); F.clear(0x1); F.try_wait(0x2, efWaitAny); });
     ut::at_end([]{ CHECK_TRACE("P0@50 P4@50"); });
 }
+
+UT_TEST(event_flags, failed_timed_wait_leaves_no_timeout)
+{
+    // a wait that times out, and one aborted by wake_up(), go straight into
+    // TMutex::lock(), which does not touch the timeout
+    static TEventFlags F;  static TMutex Block;
+    ut::proc(0, []{
+        CHECK(!F.wait(0x1, efWaitAny, 3));          // times out at tick 3
+        Block.lock(); Block.unlock();
+        CHECK(!F.wait(0x1, efWaitAny, 50));         // aborted by wake_up() at tick 5
+        Block.lock(); Block.unlock();
+    });
+    ut::proc(1, []{
+        Block.lock();
+        OS::sleep(3);                               // P0 has timed out and blocks on Block
+        CHECK(ut::P(0).is_suspended());
+        CHECK(!ut::P(0).is_sleeping());
+        Block.unlock();
+        Block.lock();
+        OS::sleep(2);
+        ut::P(0).wake_up();                         // P0 returns false and blocks on Block
+        CHECK(ut::P(0).is_suspended());
+        CHECK(!ut::P(0).is_sleeping());
+        Block.unlock();
+    });
+}

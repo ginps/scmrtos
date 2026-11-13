@@ -212,3 +212,36 @@ UT_TEST(round_robin, woken_inactive_first_process_is_stopped_at_next_tick)
     // P1: ticks 0, 1; P2's slot: 2..4 (P1's stolen iteration ends at tick 3); P1 again from 5
     ut::at_end([]{ CHECK_TRACE("1@0 1@1 2@2 1@2 2@3 2@4 1@5"); });
 }
+
+UT_TEST(round_robin, nobody_eligible_keeps_the_turn_where_it_was)
+{
+    // After a full round (so that defect N8 does not interfere) P1 and then P2
+    // sleep inside their slots: for a while nobody in the list can run. The
+    // turn must stay with P2, the last active process. When P2 wakes it goes on;
+    // when P1 wakes later, while inactive, the manager stops it at the next
+    // tick and P2 keeps running.
+    ut::on_systimer([]{ if(RRActive) RR.run(); });
+    ut::proc(0, []{
+        RR.register_process(ut::P(1), 2);
+        RR.register_process(ut::P(2), 2);
+        RRActive = true;
+    });
+    ut::proc(1, []{
+        for(int i = 0; i < 2; ++i) { T("1@%u", ut::ticks()); ut::tick(); }
+        OS::sleep(10);
+        for(int i = 0; i < 4; ++i) { T("1@%u", ut::ticks()); ut::tick(); }
+    });
+    ut::proc(2, []{
+        for(int i = 0; i < 2; ++i) { T("2@%u", ut::ticks()); ut::tick(); }
+        OS::sleep(3);
+        for(int i = 0; i < 12; ++i) { T("2@%u", ut::ticks()); ut::tick(); }
+    });
+    ut::max_ticks(100);
+    //  t0-1   P1's slot              t2-3   P2's slot
+    //  t4     P1's turn: sleeps until t14; t5 P2's turn: sleeps until t8
+    //  t6-7   nobody can run: the turn stays with P2
+    //  t8-13  P2 runs; its slot is renewed, as P1 still sleeps
+    //  t14    P1 wakes while inactive and preempts; t15 the manager stops it
+    //  t16-   regular rotation P1, P2 until P1 finishes at t21
+    ut::at_end([]{ CHECK_TRACE("1@0 1@1 2@2 2@3 2@8 2@9 2@10 2@11 2@12 2@13 1@14 2@15 1@16 1@17 2@18 2@19 1@20 2@22 2@23 2@24"); });
+}

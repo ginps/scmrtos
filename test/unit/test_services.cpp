@@ -667,6 +667,35 @@ UT_TEST(channel, isr_transfers_copy_items_with_interrupts_disabled)
     });
 }
 
+// After a blocking wait the service goes on inside its critical section: the
+// scheduler must give it back with the interrupts disabled. Here the copies
+// happen right after the producer and the consumer were blocked.
+UT_TEST(channel, items_are_copied_inside_critical_sections_after_blocking)
+{
+    static channel<TGuarded, 1> C;
+    ut::proc(0, []{
+        TGuarded out;
+        C.pop(out);                         // blocks: the channel is empty
+        CHECK_EQ(out.v, 1);
+        CHECK(C.pop(out, 10));              // blocks again, until P1's second push
+        CHECK_EQ(out.v, 2);
+    });
+    ut::proc(1, []{
+        TGuarded a(1), b(2), c(3);
+        C.push(a);                          // P0 takes it at once
+        C.push(b);
+        C.push(c);                          // blocks: the channel is full
+    }, ut::DAEMON);
+    ut::proc(2, []{
+        OS::sleep(1);
+        TGuarded out;
+        C.pop(out);                         // frees P1, which copies its item after the wait
+        CHECK_EQ(out.v, 3);
+        CHECK_EQ(UnprotectedCopies, 0);
+        CHECK(Copies >= 6);
+    });
+}
+
 UT_TEST(message, payload_is_copied_only_inside_critical_sections)
 {
     static message<TGuarded> M;
