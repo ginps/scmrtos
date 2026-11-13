@@ -91,7 +91,7 @@
 //    so stack_item_t must be able to hold a pointer.
 //
 typedef uintptr_t stack_item_t;
-typedef int       status_reg_t;      // unused: the critical section saves a sigset_t
+typedef int       status_reg_t;      // 1 - interrupts disabled, 0 - enabled (see get_interrupt_state())
 
 //-----------------------------------------------------------------------------
 //
@@ -222,7 +222,23 @@ namespace host
 //
 //     The Critical Section Wrapper
 //
+//     scmRTOS_LINUX_CRITSECT_EXIT_HOOK (optional) names a function `void f()`
+//     that is called every time an outermost critical section ends, i.e. at
+//     every point where a pending interrupt would be taken on a real MCU.
+//     Tests use it to inject interrupts at all such points (see test/unit).
+//
+#ifdef scmRTOS_LINUX_CRITSECT_EXIT_HOOK
+extern "C" void scmRTOS_LINUX_CRITSECT_EXIT_HOOK();
+#endif
+
 INLINE void enable_interrupts()  { sigprocmask(SIG_UNBLOCK, &OS::host::IrqSignals, 0); }
+// 1 if the interrupts are disabled now (inside a critical section or an interrupt handler)
+INLINE status_reg_t get_interrupt_state()
+{
+    sigset_t m;
+    sigprocmask(SIG_BLOCK, 0, &m);
+    return sigismember(&m, OS::host::SIG_SYSTEM_TIMER) == 1;
+}
 INLINE void disable_interrupts() { sigprocmask(SIG_BLOCK,   &OS::host::IrqSignals, 0); }
 
 #if scmRTOS_USER_DEFINED_CRITSECT_ENABLE == 0
@@ -230,7 +246,15 @@ class TCritSect
 {
 public:
     INLINE TCritSect () { sigprocmask(SIG_BLOCK, &OS::host::IrqSignals, &Saved); __asm__ __volatile__ ("" ::: "memory"); }
-    INLINE ~TCritSect() { __asm__ __volatile__ ("" ::: "memory"); sigprocmask(SIG_SETMASK, &Saved, 0); }
+    INLINE ~TCritSect()
+    {
+        __asm__ __volatile__ ("" ::: "memory");
+        sigprocmask(SIG_SETMASK, &Saved, 0);
+    #ifdef scmRTOS_LINUX_CRITSECT_EXIT_HOOK
+        if(sigismember(&Saved, OS::host::SIG_SYSTEM_TIMER) == 0)    // interrupts are enabled again
+            scmRTOS_LINUX_CRITSECT_EXIT_HOOK();
+    #endif
+    }
 
 private:
     sigset_t Saved;

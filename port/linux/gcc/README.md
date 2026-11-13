@@ -57,7 +57,14 @@ OS::sim_tick();                              // one system timer tick, here and 
 OS::host::set_irq_handler(n, handler);       // handler of user interrupt n (0..7)
 OS::host::raise_irq(n);                      // request interrupt n
 OS::host::irq_signal(n);                     // signal number of interrupt n, e.g. for timer_create()
+get_interrupt_state();                       // 1 - interrupts disabled (critical section, handler)
 ```
+
+If the macro `scmRTOS_LINUX_CRITSECT_EXIT_HOOK` names a function
+`extern "C" void f()`, the port calls it every time an outermost critical
+section ends, i.e. at every point where a real MCU would take a pending
+interrupt. The tests use it to inject interrupts at all such points
+(`test/unit/test_fuzz.cpp`).
 
 An interrupt requested inside a critical section is taken when the section
 ends, as on a real MCU. Handlers are written as in other ports:
@@ -120,5 +127,7 @@ Limitations
 - **`SIGALRM` is taken.** Do not use `alarm()`, libc `sleep()`,
   `setitimer(ITIMER_REAL)` or `SIGRTMIN..SIGRTMIN+8` in the application.
 - **One thread.** Do not call OS functions from other Linux threads.
-- **AddressSanitizer** needs stack-switch annotations
-  (`__sanitizer_start_switch_fiber`), which the port does not have yet.
+- **Sanitizers.** UndefinedBehaviorSanitizer works as is. AddressSanitizer works
+  with `ASAN_OPTIONS=detect_stack_use_after_return=0`: the port unpoisons a
+  process stack when the process is (re)started, but has no stack-switch
+  annotations (`__sanitizer_start_switch_fiber`).

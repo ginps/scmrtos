@@ -47,6 +47,23 @@
 #include <scmRTOS.h>
 
 #include <ucontext.h>
+
+// AddressSanitizer keeps "poison" marks of old stack frames in a process stack;
+// they must be cleared when the stack is reused for a (re)started process.
+#if defined(__SANITIZE_ADDRESS__)
+#define SCMRTOS_LINUX_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define SCMRTOS_LINUX_ASAN 1
+#endif
+#endif
+#ifdef SCMRTOS_LINUX_ASAN
+extern "C" void __asan_unpoison_memory_region(void const volatile * addr, size_t size);
+#define UNPOISON_STACK(addr, size) __asan_unpoison_memory_region((addr), (size))
+#endif
+#ifndef UNPOISON_STACK
+#define UNPOISON_STACK(addr, size)
+#endif
 #include <sys/time.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,6 +75,7 @@ namespace
     void                (* EntryPoints[OS::MAX_PROCESS_COUNT])(); // process functions, indexed by priority
     ucontext_t * volatile  CurrentContext = 0;                // context of the running process
     volatile sig_atomic_t  TimerLocked    = 0;
+    bool                   Started        = false;           // os_start() has been called
     void (* volatile       IrqHandlers[OS::host::IRQ_COUNT])();
     bool                   IrqSetReady    = false;
 
@@ -172,6 +190,7 @@ stack_item_t* OS::host::init_context(uint_fast8_t pr, stack_item_t* stack_begin,
         abort();
     }
 
+    UNPOISON_STACK(reinterpret_cast<char*>(stack_end) - size, size);
     ctx->uc_stack.ss_sp   = reinterpret_cast<char*>(stack_end) - size;
     ctx->uc_stack.ss_size = size;
     ctx->uc_link          = 0;
@@ -191,7 +210,15 @@ void OS::TBaseProcess::init_stack_frame( stack_item_t * Stack
                                     #endif
                                        )
 {
+    // A process that is restarted while the OS runs (process::terminate()) gets a
+    // new context; an interrupt in the middle of that could switch to it.
+    if(Started && !get_interrupt_state())
+    {
+        fprintf(stderr, "scmRTOS linux port: process with priority %u is re-initialized outside a critical section\n", (unsigned)Priority);
+        abort();
+    }
 #if scmRTOS_DEBUG_ENABLE == 1
+    UNPOISON_STACK(StackBegin, (Stack - StackBegin) * sizeof(stack_item_t));
     for(stack_item_t * p = StackBegin; p < Stack; ++p)
         *p = STACK_DEFAULT_PATTERN;
     StackPointer = host::init_context(Priority, StackBegin, Stack, exec);
@@ -284,6 +311,7 @@ extern "C" NORETURN void os_start(stack_item_t* sp)
     }
 #endif
 
+    Started = true;
     CurrentContext = reinterpret_cast<ucontext_t*>(sp);
     setcontext(CurrentContext);                    // the process enables the interrupts itself
 
