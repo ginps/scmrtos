@@ -87,3 +87,10 @@ if '--branches' in sys.argv:
             t, n = per[ln]
             if t < n:
                 print('  %s:%d: %d/%d  %s' % (f, ln, t, n, src_text[f].get(ln, '').strip()))
+
+for a in sys.argv:
+    if a.startswith('--dump-covered='):
+        with open(a.split('=', 1)[1], 'w') as out:
+            for f in sorted(lines):
+                for ln in sorted(l for l, c in lines[f].items() if c):
+                    out.write('%s:%d\n' % (f, ln))
