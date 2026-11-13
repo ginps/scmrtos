@@ -18,7 +18,7 @@ CXX=${CXX:-g++}
 # Sources of the tree under test; develop-only parts are detected by file
 CORE="$SRC/core/os_kernel.cpp $SRC/core/os_services.cpp"
 [ -f "$SRC/core/usrlib.cpp" ] && CORE="$CORE $SRC/core/usrlib.cpp"
-EXT_INC=""; EXT_SRC=""; TESTS="$U/test_kernel.cpp $U/test_ring_buffer.cpp $U/test_services.cpp"
+EXT_INC=""; EXT_SRC=""; TESTS="$U/test_kernel.cpp $U/test_ring_buffer.cpp $U/test_services.cpp $U/test_fuzz.cpp"
 add_ext() { # dir source test
   if [ -d "$SRC/ext/$1" ]; then
     EXT_INC="$EXT_INC -I$SRC/ext/$1"
@@ -37,6 +37,10 @@ add_ext watchdog        ""                  test_watchdog.cpp
 
 EXISTING=""; for t in $TESTS; do [ -f "$t" ] && EXISTING="$EXISTING $t"; done
 [ -d "$SRC/ext/semaphore" ] || set -- -DUT_V52 "$@"
+# defect 2 (a timed wait can turn into an endless one) is present unless the timer skips
+# ready processes (develop) or the services re-check the timeout (patch 0002 for v5.2.0)
+grep -q "is_process_ready(p->Priority)" "$SRC/core/os_kernel.h" || \
+  grep -q "timeout expired after the process had been waked up" "$SRC/core/os_services.h" || set -- -DUT_DEFECT2_PRESENT "$@"
 # fix of defect 4 present: ring_buffer rejects a Size its index type cannot hold at compile time
 grep -q "static_assert(Size" "$SRC/core/usrlib.h" && set -- -DUT_RB_SIZE_CHECKED "$@"
 
