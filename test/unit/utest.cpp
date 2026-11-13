@@ -40,6 +40,9 @@ namespace
     ut::fn_t   CtxSwHook    = 0;
     unsigned   MaxTicks     = 2000;
     bool       SafeRun      = false;
+    ut::fn_t   CritSectHook = 0;
+    unsigned   Seed         = 1;
+    unsigned   AsyncPeriod  = 0;
     volatile unsigned Switches = 0;
     volatile int      Failures = 0;
     volatile bool     Finishing = false;
@@ -89,7 +92,7 @@ typedef OS::process<OS::pr3, 64*1024>                   TP3;
 typedef OS::process<OS::pr4, 64*1024, OS::pssSuspended> TP4;
 
 static NORETURN void run_body(int i);
-static void p3_entry();
+__attribute__((unused)) static void p3_entry();
 
 TP0 P0("P0");
 TP1 P1("P1");
@@ -169,6 +172,15 @@ namespace OS
     void context_switch_user_hook()
     {
         Switches = Switches + 1;
+        // Kernel invariant: the scheduler works on the process maps and the
+        // process table, so it must never be entered with the interrupts enabled.
+        // (Scheme 1 calls this hook from the context switch interrupt, where
+        // that is always true; scheme 0 calls it from the scheduler itself.)
+        if(!get_interrupt_state() && !Finishing)
+        {
+            printf("    context switch requested outside a critical section (tick %u)\n", ut::ticks());
+            Failures = Failures + 1;
+        }
         if(CtxSwHook)
             CtxSwHook();
     }
@@ -193,6 +205,15 @@ void ut::on_systimer(fn_t hook)             { SysTimerHook = hook; }
 void ut::on_context_switch(fn_t hook)       { CtxSwHook = hook; }
 void ut::max_ticks(unsigned n)              { MaxTicks = n; }
 void ut::use_safe_run()                     { SafeRun = true; }
+void ut::on_critsect_exit(fn_t hook)        { CritSectHook = hook; }
+void ut::async_ticks(unsigned period_us)    { AsyncPeriod = period_us; }
+unsigned ut::seed()                         { return Seed; }
+
+extern "C" void ut_critsect_exit_hook()
+{
+    if(CritSectHook && !Finishing)
+        CritSectHook();
+}
 
 void ut::finish()
 {
@@ -338,6 +359,20 @@ static NORETURN void run_child(ut::TTest * t)
         OS::safe_run(P0, P1, P2, P3, P4);
 #endif
 #endif
+    if(AsyncPeriod)
+    {
+        disable_interrupts();                   // no timer signal before the kernel installs its handler
+        struct sigevent sev;
+        memset(&sev, 0, sizeof(sev));
+        sev.sigev_notify = SIGEV_SIGNAL;
+        sev.sigev_signo  = OS::host::SIG_SYSTEM_TIMER;
+        timer_t tm;
+        timer_create(CLOCK_MONOTONIC, &sev, &tm);
+        struct itimerspec its;
+        its.it_interval.tv_sec = 0; its.it_interval.tv_nsec = AsyncPeriod * 1000L;
+        its.it_value = its.it_interval;
+        timer_settime(tm, 0, &its, 0);
+    }
     OS::run();
 }
 
@@ -364,21 +399,96 @@ static bool matches(const ut::TTest * t, int argc, char ** argv)
     return !any_filter;
 }
 
+// Run one test in a forked child; returns true if it passed. The child's output goes to 'out'.
+static bool run_one(ut::TTest * t, unsigned seed, double timeout_ms, char *& out, char * reason, size_t reason_size, double & dt)
+{
+    fflush(stdout);
+    int fds[2];
+    if(pipe(fds) != 0) { perror("pipe"); exit(2); }
+    pid_t pid = fork();
+    if(pid == 0)
+    {
+        close(fds[0]);
+        dup2(fds[1], 1);
+        dup2(fds[1], 2);
+        setvbuf(stdout, 0, _IOLBF, 0);
+        Seed = seed;
+        run_child(t);
+    }
+    close(fds[1]);
+    fcntl(fds[0], F_SETFL, O_NONBLOCK);
+
+    std::size_t cap = 1 << 16, len = 0;
+    out = static_cast<char*>(malloc(cap));
+    int status = 0;
+    bool hung = false;
+    double t0 = now_ms();
+    for(;;)
+    {
+        pollfd p = { fds[0], POLLIN, 0 };
+        poll(&p, 1, 2);
+        for(;;)
+        {
+            if(len + 4096 > cap) { cap *= 2; out = static_cast<char*>(realloc(out, cap)); }
+            ssize_t n = read(fds[0], out + len, 4096);
+            if(n <= 0) break;
+            len += n;
+        }
+        if(waitpid(pid, &status, WNOHANG) == pid)
+            break;
+        if(now_ms() - t0 > timeout_ms)
+        {
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            hung = true;
+            break;
+        }
+    }
+    for(;;)
+    {
+        if(len + 4096 > cap) { cap *= 2; out = static_cast<char*>(realloc(out, cap)); }
+        ssize_t n = read(fds[0], out + len, 4096);
+        if(n <= 0) break;
+        len += n;
+    }
+    close(fds[0]);
+    out[len] = 0;
+    dt = now_ms() - t0;
+
+    reason[0] = 0;
+    if(hung)                            snprintf(reason, reason_size, "hung, killed after %.0f ms", timeout_ms);
+    else if(WIFSIGNALED(status))        snprintf(reason, reason_size, "crashed: %s", strsignal(WTERMSIG(status)));
+    else if(WEXITSTATUS(status) != 0)   snprintf(reason, reason_size, "failed");
+    else                                return true;
+    return false;
+}
+
 int main(int argc, char ** argv)
 {
-    bool verbose = false, list = false;
+    bool verbose = false, list = false, fail_fast = false;
     double timeout_ms = 5000;
+    unsigned seed_from = 1, seed_to = 1;
     for(int i = 1; i < argc; ++i)
     {
         if(!strcmp(argv[i], "-v")) verbose = true;
         else if(!strcmp(argv[i], "-l")) list = true;
+        else if(!strcmp(argv[i], "-x")) fail_fast = true;
         else if(!strncmp(argv[i], "--timeout=", 10)) timeout_ms = atof(argv[i] + 10);
+        else if(!strncmp(argv[i], "--seed=", 7)) seed_from = seed_to = strtoul(argv[i] + 7, 0, 10);
+        else if(!strncmp(argv[i], "--seeds=", 8))
+        {
+            char * dash = 0;
+            seed_from = strtoul(argv[i] + 8, &dash, 10);
+            seed_to   = *dash == '-' ? strtoul(dash + 1, 0, 10) : seed_from;
+        }
         else if(!strcmp(argv[i], "-h"))
         {
-            printf("usage: %s [-l] [-v] [--timeout=ms] [filter...]\n"
-                   "  -l          list tests\n"
-                   "  -v          show the output of passed tests too\n"
-                   "  filter      run tests whose 'suite.name' contains one of the filters\n", argv[0]);
+            printf("usage: %s [-l] [-v] [-x] [--timeout=ms] [--seed=N | --seeds=A-B] [filter...]\n"
+                   "  -l            list tests\n"
+                   "  -v            show the output of passed tests too\n"
+                   "  -x            stop at the first unexpected failure\n"
+                   "  --seeds=A-B   run every selected test once per seed (ut::seed()); for the fuzz tests\n"
+                   "  filter        run tests whose 'suite.name' contains one of the filters\n", argv[0]);
             return 0;
         }
     }
@@ -397,80 +507,59 @@ int main(int argc, char ** argv)
         if(!matches(t, argc, argv))
             continue;
         ++total;
-        fflush(stdout);
 
-        int fds[2];
-        if(pipe(fds) != 0) { perror("pipe"); return 2; }
-        pid_t pid = fork();
-        if(pid == 0)
-        {
-            close(fds[0]);
-            dup2(fds[1], 1);
-            dup2(fds[1], 2);
-            setvbuf(stdout, 0, _IOLBF, 0);
-            run_child(t);
-        }
-        close(fds[1]);
-        fcntl(fds[0], F_SETFL, O_NONBLOCK);
-
-        std::size_t cap = 1 << 16, len = 0;
-        char * out = static_cast<char*>(malloc(cap));
-        int status = 0;
-        bool hung = false;
-        double t0 = now_ms();
-        for(;;)
-        {
-            pollfd p = { fds[0], POLLIN, 0 };
-            poll(&p, 1, 5);
-            for(;;)
-            {
-                if(len + 4096 > cap) { cap *= 2; out = static_cast<char*>(realloc(out, cap)); }
-                ssize_t n = read(fds[0], out + len, 4096);
-                if(n <= 0) break;
-                len += n;
-            }
-            if(waitpid(pid, &status, WNOHANG) == pid)
-                break;
-            if(now_ms() - t0 > timeout_ms)
-            {
-                kill(pid, SIGKILL);
-                waitpid(pid, &status, 0);
-                hung = true;
-                break;
-            }
-        }
-        for(;;)
-        {
-            if(len + 4096 > cap) { cap *= 2; out = static_cast<char*>(realloc(out, cap)); }
-            ssize_t n = read(fds[0], out + len, 4096);
-            if(n <= 0) break;
-            len += n;
-        }
-        close(fds[0]);
-        out[len] = 0;
-        double dt = now_ms() - t0;
-
+        // all seeds of one test count as one test; the first failing seeds are shown
+        bool ok = true;
+        unsigned bad_seeds = 0, runs = 0;
+        const unsigned MAX_BAD_SEEDS = 5;
         char reason[64] = "";
-        bool ok = false;
-        if(hung)                            snprintf(reason, sizeof(reason), "hung, killed after %.0f ms", timeout_ms);
-        else if(WIFSIGNALED(status))        snprintf(reason, sizeof(reason), "crashed: %s", strsignal(WTERMSIG(status)));
-        else if(WEXITSTATUS(status) != 0)   snprintf(reason, sizeof(reason), "failed");
-        else                                ok = true;
+        double dt_total = 0;
+        for(unsigned seed = seed_from; seed <= seed_to; ++seed)
+        {
+            char * out = 0;
+            char r[64];
+            double dt = 0;
+            bool one = run_one(t, seed, timeout_ms, out, r, sizeof(r), dt);
+            ++runs;
+            dt_total += dt;
+            if(!one)
+            {
+                if(ok) snprintf(reason, sizeof(reason), "%s", r);
+                ok = false;
+                if(++bad_seeds <= 3 && seed_to != seed_from)
+                    printf("    seed %u: %s\n%s", seed, r, out);
+            }
+            if(seed_to == seed_from)
+            {
+                const char * tag;
+                if(ok && !t->defect)        { tag = "[  OK  ]"; }
+                else if(ok)                 { tag = "[ FIXD ]"; }
+                else if(t->defect)          { tag = "[ KNWN ]"; }
+                else                        { tag = "[ FAIL ]"; }
+                printf("%s %s.%s", tag, t->suite, t->name);
+                if(!ok)                     printf("  (%s)", reason);
+                if(t->defect)               printf("  [defect %s%s]", t->defect, ok ? " not reproduced" : "");
+                if(dt > 500)                printf("  %.0f ms", dt);
+                printf("\n");
+                if((!ok || verbose) && out && out[0])
+                    fputs(out, stdout);
+            }
+            free(out);
+            if(bad_seeds >= MAX_BAD_SEEDS)      // the point is made; failing seeds are slow (hangs)
+                break;
+        }
+        if(seed_to != seed_from)
+        {
+            const char * tag = ok ? (t->defect ? "[ FIXD ]" : "[  OK  ]") : (t->defect ? "[ KNWN ]" : "[ FAIL ]");
+            printf("%s %s.%s  (%u seeds, %u failed%s, %.1f s)\n", tag, t->suite, t->name, runs, bad_seeds,
+                   bad_seeds >= MAX_BAD_SEEDS && runs < seed_to - seed_from + 1 ? ", stopped" : "", dt_total / 1000);
+        }
 
-        const char * tag;
-        if(ok && !t->defect)        { tag = "[  OK  ]"; ++passed; }
-        else if(ok)                 { tag = "[ FIXD ]"; ++passed; ++fixed; }
-        else if(t->defect)          { tag = "[ KNWN ]"; ++known; }
-        else                        { tag = "[ FAIL ]"; ++failed; }
-
-        printf("%s %s.%s", tag, t->suite, t->name);
-        if(!ok)                     printf("  (%s)", reason);
-        if(t->defect)               printf("  [defect %s%s]", t->defect, ok ? " not reproduced" : "");
-        if(dt > 500)                printf("  %.0f ms", dt);
-        printf("\n");
-        if((!ok || verbose) && len)
-            fputs(out, stdout);
-        free(out);
+        if(ok)              { ++passed; if(t->defect) ++fixed; }
+        else if(t->defect)  ++known;
+        else                ++failed;
+        if(fail_fast && failed)
+            break;
     }
 
     printf("\n%d tests: %d passed, %d failed, %d known defects reproduced, %d known defects not reproduced\n",

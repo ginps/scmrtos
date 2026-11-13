@@ -47,10 +47,14 @@ namespace ut
     void on_context_switch(fn_t hook);                         // called on every context switch
     void max_ticks(unsigned n);                                // tick limit, default 2000
     void use_safe_run();                                       // start with OS::safe_run() instead of OS::run()
+    void on_critsect_exit(fn_t hook);                          // called whenever an outermost critical section ends
+    void async_ticks(unsigned period_us);                      // system timer from a real timer, at any instruction
+                                                               // (not deterministic; for stress tests only)
 
     //--------------------------------------------------------------------------
     //  Run time (call from processes or interrupt handlers)
     //
+    unsigned  seed();                                          // --seed=N / --seeds=A-B of the runner, default 1
     void      finish();                                        // end the test now
     void      tick(unsigned n = 1);                            // n system timer ticks right here
     unsigned  ticks();                                         // OS::get_tick_count()
@@ -109,6 +113,16 @@ namespace ut
 // Test that exposes a known defect: its failure is reported as expected,
 // its success as "defect fixed". 'id' refers to the analysis report.
 #define UT_TEST_DEFECT(suite, name, id) UT_TEST_IMPL(suite, name, id)
+
+// Test of a process declared pssSuspended. With scmRTOS_LINUX_PRIO_MASK_TABLE == 1
+// the port builds get_prio_tag() on a dynamically initialized table, like the
+// AVR/MSP430/STM8 ports, and the test processes are constructed before it:
+// defect 3 (the "suspended" process starts at once).
+#if scmRTOS_LINUX_PRIO_MASK_TABLE == 1
+#define UT_TEST_SUSPENDED(suite, name) UT_TEST_DEFECT(suite, name, "3")
+#else
+#define UT_TEST_SUSPENDED(suite, name) UT_TEST(suite, name)
+#endif
 
 #define CHECK(c)          ut::check((c), #c, __FILE__, __LINE__)
 #define CHECK_EQ(a, b)    ut::check_eq((long long)(a), (long long)(b), #a, #b, __FILE__, __LINE__)

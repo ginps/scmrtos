@@ -23,7 +23,9 @@ typedef uint32_t  tick_count_t;
 #define scmRTOS_CONTEXT_SWITCH_USER_HOOK_ENABLE 1
 #define scmRTOS_IDLE_PROCESS_STACK_SIZE         (64*1024)
 #define scmRTOS_DEBUG_ENABLE                    1
+#ifndef scmRTOS_SUSPENDED_PROCESS_ENABLE
 #define scmRTOS_SUSPENDED_PROCESS_ENABLE        1
+#endif
 
 #ifndef scmRTOS_PROCESS_RESTART_ENABLE
 #define scmRTOS_PROCESS_RESTART_ENABLE          0
