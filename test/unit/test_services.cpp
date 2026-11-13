@@ -268,6 +268,54 @@ UT_TEST_DEFECT(mutex, try_lock_timeout_is_total_across_handovers, "6")
     ut::at_end([]{ CHECK_TRACE("P1:0@5"); });
 }
 
+UT_TEST_DEFECT(mutex, forced_wakeup_leaves_no_stale_waiter, "N7")
+{
+    // P1 waits in lock(). The owner P0 wakes it by force and then unlocks:
+    // P1 is already ready, so unlock() does not take it out of the mutex's
+    // waiting map, and lock() does not either. P1 gets the mutex, releases it
+    // and goes to sleep for 50 ticks - and the next unlock() of that mutex by
+    // anybody "resumes" it out of that sleep.
+    static TMutex M;
+    ut::proc(0, []{
+        M.lock();
+        OS::sleep(1);                       // P1 blocks on M
+        ut::P(1).force_wake_up();
+        M.unlock();
+        OS::sleep(5);
+        M.lock(); M.unlock();               // tick 6: must not affect P1
+        OS::sleep(100);
+    });
+    ut::proc(1, []{
+        M.lock(); M.unlock();
+        unsigned t0 = ut::ticks();
+        OS::sleep(50);
+        T("P1-slept%u", ut::ticks() - t0);
+    });
+    ut::at_end([]{ CHECK_TRACE("P1-slept50"); });
+}
+
+UT_TEST_DEFECT(channel, forced_wakeup_leaves_no_stale_producer, "N7")
+{
+    // the same with a producer waiting in push() on a full channel
+    static channel<int, 1> C;
+    ut::proc(0, []{
+        C.push(1);
+        OS::sleep(1);                       // P1 blocks in push()
+        ut::P(1).force_wake_up();
+        int x; C.pop(x);                    // P1 is ready already: stays in the producers map
+        OS::sleep(5);
+        C.pop(x);                           // tick 6: wakes "producers" - must not affect P1
+        OS::sleep(100);
+    });
+    ut::proc(1, []{
+        C.push(2);
+        unsigned t0 = ut::ticks();
+        OS::sleep(50);
+        T("P1-slept%u", ut::ticks() - t0);
+    });
+    ut::at_end([]{ CHECK_TRACE("P1-slept50"); });
+}
+
 UT_TEST(mutex, timed_out_waiter_does_not_get_mutex_later)
 {
     static TMutex M;
@@ -555,6 +603,81 @@ UT_TEST(channel, flush_wakes_producers)
     });
 }
 
+//------------------------------------------------------------------------------
+//  Item type that notes whether it is ever copied with the interrupts enabled.
+//  The channel and the message copy items into and out of their storage; an
+//  interrupt in the middle of that would see (or leave) a half-written object.
+namespace
+{
+    volatile unsigned UnprotectedCopies, Copies;
+
+    struct TGuarded
+    {
+        int v;
+        TGuarded(int x = 0) : v(x) { }
+        TGuarded(const TGuarded & o) : v(o.v) { note(); }
+        TGuarded & operator=(const TGuarded & o) { v = o.v; note(); return *this; }
+        static void note()
+        {
+            Copies = Copies + 1;
+            if(!get_interrupt_state()) UnprotectedCopies = UnprotectedCopies + 1;
+        }
+    };
+
+    // copies made by the caller itself (arguments, results) are not the service's business
+    struct TQuiet { unsigned c, u; TQuiet() : c(Copies), u(UnprotectedCopies) { } ~TQuiet() { Copies = c; UnprotectedCopies = u; } };
+}
+
+UT_TEST(channel, items_are_copied_only_inside_critical_sections)
+{
+    static channel<TGuarded, 4> C;
+    ut::proc(0, []{
+        TGuarded a(1), b(2), out;
+        TGuarded arr[2], dst[2];
+        { TQuiet q; arr[0] = TGuarded(3); arr[1] = TGuarded(4); }
+
+        C.push(a);           CHECK_EQ(UnprotectedCopies, 0);
+        C.push_front(b);     CHECK_EQ(UnprotectedCopies, 0);
+        C.pop(out);          CHECK_EQ(UnprotectedCopies, 0);   CHECK_EQ(out.v, 2);
+        C.pop_back(out);     CHECK_EQ(UnprotectedCopies, 0);   CHECK_EQ(out.v, 1);
+        C.write(arr, 2);     CHECK_EQ(UnprotectedCopies, 0);
+        C.read(dst, 2);      CHECK_EQ(UnprotectedCopies, 0);   CHECK_EQ(dst[1].v, 4);
+    #ifndef UT_V52
+        CHECK(C.try_push(a));        CHECK_EQ(UnprotectedCopies, 0);
+        CHECK(C.try_push_front(b));  CHECK_EQ(UnprotectedCopies, 0);
+        CHECK(C.try_pop(out));       CHECK_EQ(UnprotectedCopies, 0);
+        C.flush();
+    #endif
+        CHECK(Copies >= 8);                                    // the probe itself works
+    });
+}
+
+UT_TEST(channel, isr_transfers_copy_items_with_interrupts_disabled)
+{
+    static channel<TGuarded, 4> C;
+    static TGuarded Src[2], Dst[2];
+    ut::irq(0, []{ TISRW isr; C.write_isr(Src, 2); });
+    ut::irq(1, []{ TISRW isr; C.read_isr(Dst, 2); });
+    ut::proc(0, []{
+        { TQuiet q; Src[0] = TGuarded(5); Src[1] = TGuarded(6); }
+        ut::raise(0); ut::raise(1);
+        CHECK_EQ(UnprotectedCopies, 0);
+        CHECK(Copies >= 4);
+        CHECK_EQ(Dst[1].v, 6);
+    });
+}
+
+UT_TEST(message, payload_is_copied_only_inside_critical_sections)
+{
+    static message<TGuarded> M;
+    ut::proc(0, []{
+        TGuarded a(7), out;
+        M = a;               CHECK_EQ(UnprotectedCopies, 0);
+        M.out(out);          CHECK_EQ(UnprotectedCopies, 0);   CHECK_EQ(out.v, 7);
+        CHECK(Copies >= 2);
+    });
+}
+
 UT_TEST(channel, struct_items_wide_index)
 {
     struct TMsg { uint32_t id; char text[12]; };
@@ -715,3 +838,330 @@ UT_TEST(message, wake_up_aborts_wait)
     ut::proc(1, []{ OS::sleep(3); ut::P(0).wake_up(); });
     ut::at_end([]{ CHECK_TRACE("P0:0@3"); });
 }
+
+//==============================================================================
+//
+//    TService: the kit user services are built from
+//
+//    A minimal service made of suspend() / is_waked_up() / resume_all() /
+//    resume_next_ready() and their ISR versions; checks their return values,
+//    which the kernel's own services mostly ignore.
+//
+namespace
+{
+    class TGate : public TService
+    {
+    public:
+        TGate() : Map(0) { }
+        // true: released by open_*(); false: timeout or forced wake-up
+        bool pass(timeout_t timeout = 0)
+        {
+            TCritSect cs;
+            cur_proc_timeout() = timeout;
+            suspend(Map);
+        #ifdef UT_V52
+            if(is_timeouted(Map)) return false;     // the v5.2.0 name
+        #else
+            if(is_waked_up(Map)) return false;
+        #endif
+            cur_proc_timeout() = 0;
+            return true;
+        }
+        bool open_all()      { TCritSect cs; return resume_all(Map); }
+        bool open_one()      { TCritSect cs; return resume_next_ready(Map); }
+        bool open_all_isr()  { TCritSect cs; return resume_all_isr(Map); }
+        bool open_one_isr()  { TCritSect cs; return resume_next_ready_isr(Map); }
+        bool has_waiters()   { TCritSect cs; return Map != 0; }
+    private:
+        volatile TProcessMap Map;
+    };
+    TGate * G;
+    int     GateResult[4];
+}
+
+UT_TEST(service_kit, resume_returns_false_without_waiters)
+{
+    static TGate Gate;
+    ut::proc(0, []{
+        CHECK(!Gate.open_all());
+        CHECK(!Gate.open_one());
+        CHECK(!Gate.open_all_isr());
+        CHECK(!Gate.open_one_isr());
+        CHECK(!Gate.has_waiters());
+    });
+}
+
+UT_TEST(service_kit, resume_all_wakes_everybody_and_returns_true)
+{
+    static TGate Gate;
+    ut::proc(0, []{ CHECK(Gate.pass()); T("P0"); });
+    ut::proc(1, []{ CHECK(Gate.pass(50)); T("P1"); });
+    ut::proc(2, []{
+        CHECK(Gate.has_waiters());
+        CHECK(Gate.open_all());             // both run before this returns
+        T("P2");
+        CHECK(!Gate.has_waiters());
+        CHECK(!Gate.open_all());
+    });
+    ut::at_end([]{ CHECK_TRACE("P0 P1 P2"); });
+}
+
+UT_TEST(service_kit, resume_next_ready_wakes_one_and_returns_true)
+{
+    static TGate Gate;
+    ut::proc(0, []{ CHECK(Gate.pass()); T("P0"); });
+    ut::proc(1, []{ CHECK(Gate.pass()); T("P1"); });
+    ut::proc(2, []{
+        CHECK(Gate.open_one()); T("a");     // the highest waiter only
+        CHECK(Gate.has_waiters());
+        CHECK(Gate.open_one()); T("b");
+        CHECK(!Gate.has_waiters());
+        CHECK(!Gate.open_one());
+    });
+    ut::at_end([]{ CHECK_TRACE("P0 a P1 b"); });
+}
+
+UT_TEST(service_kit, isr_versions_return_values)
+{
+    static TGate Gate;
+    G = &Gate;
+    ut::irq(0, []{ TISRW isr; GateResult[0] = G->open_one_isr(); GateResult[1] = G->has_waiters(); });
+    ut::irq(1, []{ TISRW isr; GateResult[2] = G->open_all_isr(); GateResult[3] = G->has_waiters(); });
+    ut::proc(0, []{ CHECK(Gate.pass()); T("P0"); CHECK(Gate.pass()); T("P0"); });
+    ut::proc(1, []{ CHECK(Gate.pass()); T("P1"); });
+    ut::proc(2, []{
+        ut::raise(0); T("a");               // P0 only
+        CHECK_EQ(GateResult[0], 1); CHECK_EQ(GateResult[1], 1);
+        ut::raise(1); T("b");               // P0 (waiting again) and P1
+        CHECK_EQ(GateResult[2], 1); CHECK_EQ(GateResult[3], 0);
+        ut::raise(0); ut::raise(1);
+        CHECK_EQ(GateResult[0], 0); CHECK_EQ(GateResult[2], 0);
+    });
+    ut::at_end([]{ CHECK_TRACE("P0 a P0 P1 b"); });
+}
+
+UT_TEST(service_kit, timeout_and_forced_wakeup_return_false_and_leave_the_map)
+{
+    static TGate Gate;
+    ut::proc(0, []{
+        CHECK(!Gate.pass(3));
+        CHECK_EQ(ut::ticks(), 3);
+        CHECK(!Gate.has_waiters());
+        CHECK(!Gate.pass());                // forced wake-up at tick 5
+        CHECK_EQ(ut::ticks(), 5);
+        CHECK(!Gate.has_waiters());
+    });
+    ut::proc(1, []{ OS::sleep(5); ut::P(0).force_wake_up(); CHECK(!Gate.open_all()); });
+}
+
+UT_TEST(service_kit, timed_out_process_is_not_resumed)
+{
+    // P1's timeout has expired but it has not run yet: a resume must skip it
+    // (it will report the timeout itself) and return false
+    static TGate Gate;
+    ut::proc(1, []{ bool r = Gate.pass(2); T("P1:%d", r); });
+    ut::proc(0, []{
+        OS::sleep(1);
+        ut::tick();                         // tick 2: P1 is ready by timeout, P0 keeps the CPU
+        CHECK(!Gate.open_one());
+        CHECK(!Gate.open_all());
+        CHECK(Gate.has_waiters());          // still listed: P1 removes itself
+    });
+    ut::at_end([]{ CHECK_TRACE("P1:0"); CHECK(!Gate.has_waiters()); });
+}
+
+//==============================================================================
+//
+//    Side effects the services must not have
+//
+UT_TEST(event_flag, signal_isr_to_a_waiter_does_not_latch)
+{
+    static TEventFlag F;
+    ut::irq(0, []{ TISRW isr; F.signal_isr(); });
+    ut::proc(0, []{ CHECK(F.wait()); });
+    ut::proc(1, []{ ut::raise(0); CHECK(!F.is_signaled()); });
+}
+
+UT_TEST(message, send_isr_to_a_waiter_does_not_latch)
+{
+    static message<int> M;
+    ut::irq(0, []{ TISRW isr; M.send_isr(); });
+    ut::proc(0, []{ CHECK(M.wait()); });
+    ut::proc(1, []{ ut::raise(0); CHECK(!M.is_non_empty()); ut::raise(0); CHECK(M.is_non_empty()); });
+}
+
+UT_TEST(mutex, try_lock_timeout_takes_the_mutex)
+{
+    static TMutex M;
+    ut::proc(0, []{
+        CHECK(M.try_lock(5));               // free: taken at once
+        CHECK(M.is_locked());
+        OS::sleep(3);
+        M.unlock();
+    });
+    ut::proc(1, []{
+        CHECK(!M.try_lock());               // P0 really owns it
+        CHECK(M.try_lock(10));              // released at tick 3
+        CHECK(M.is_locked());
+        M.unlock();
+        CHECK(!M.is_locked());
+    });
+}
+
+UT_TEST(mutex, unlock_wakes_nobody_but_waiters)
+{
+    // P4 sleeps and has nothing to do with the mutex; P1 and P2 wait for it
+    static TMutex M;
+    ut::proc(4, []{ unsigned t0 = ut::ticks(); OS::sleep(50); T("P4-slept%u", ut::ticks() - t0); });
+    ut::proc(1, []{ OS::sleep(1); M.lock(); T("P1"); OS::sleep(3); M.unlock(); });
+    ut::proc(2, []{ OS::sleep(1); M.lock(); T("P2@%u", ut::ticks()); M.unlock(); });
+    ut::proc(3, []{ M.lock(); OS::sleep(2); unsigned s = ut::switches(); M.unlock(); CHECK_EQ(ut::switches() - s, 2); });
+    // unlock at tick 2 wakes P1 only: to P1, which sleeps, and back to P3 - two switches
+    ut::at_end([]{ CHECK_TRACE("P1 P2@5 P4-slept50"); });
+}
+
+UT_TEST(mutex, unlock_isr_takes_the_waiter_out_of_the_map)
+{
+    static TMutex M;
+    ut::irq(0, []{ TISRW isr; M.unlock_isr(); });
+    ut::proc(0, []{
+        OS::sleep(1);
+        M.lock();                           // released by the interrupt at tick 2
+        M.unlock();
+        unsigned t0 = ut::ticks();
+        OS::sleep(50);
+        T("P0-slept%u", ut::ticks() - t0);
+    });
+    ut::proc(1, []{
+        M.lock();
+        OS::sleep(2);
+        ut::raise(0);
+        OS::sleep(5);
+        M.lock(); M.unlock();               // must not "resume" P0 out of its sleep
+        OS::sleep(100);
+    });
+    ut::at_end([]{ CHECK_TRACE("P0-slept50"); });
+}
+
+UT_TEST(services, fresh_services_do_not_wake_sleeping_processes)
+{
+    // every service starts with an empty waiting map: using it must not make
+    // sleeping processes ready (P0 and P4 are the ends of the priority range)
+    ut::proc(0, []{ OS::sleep(50); T("P0@%u", ut::ticks()); });
+    ut::proc(4, []{ OS::sleep(50); T("P4@%u", ut::ticks()); });
+    ut::proc(2, []{
+        static TEventFlag F;  static TMutex M;  static channel<int, 2> C;  static message<int> Msg;
+        OS::sleep(5);
+        int x = 0;
+        F.signal(); F.clear();
+        M.lock(); M.unlock();
+        C.push(1); C.pop(x); C.push_front(2); C.pop_back(x);
+        const int d[2] = { 1, 2 }; int o[2];
+        C.write(d, 2); C.read(o, 2); C.flush();
+        Msg.send(); Msg.reset();
+    });
+    ut::at_end([]{ CHECK_TRACE("P0@50 P4@50"); });
+}
+
+UT_TEST(services, successful_timed_wait_leaves_no_timeout)
+{
+    // After a wait with a timeout succeeds the timeout must be off. P0 goes
+    // straight from each successful timed wait into TMutex::lock(), which does
+    // not touch the timeout: there it must not be "sleeping".
+    static TEventFlag F;  static TMutex M, Block;  static channel<int, 4> C;  static message<int> Msg;
+    ut::proc(0, []{
+        int x; int buf[2];
+        CHECK(F.wait(100));         Block.lock(); Block.unlock();
+        CHECK(Msg.wait(100));       Block.lock(); Block.unlock();
+        CHECK(M.try_lock(100));     Block.lock(); Block.unlock(); M.unlock();
+        CHECK(C.pop(x, 100));       Block.lock(); Block.unlock();
+        CHECK(C.pop_back(x, 100));  Block.lock(); Block.unlock();
+        CHECK(C.read(buf, 2, 100)); Block.lock(); Block.unlock();
+    });
+    ut::proc(1, []{
+        const int d[2] = { 1, 2 };
+        M.lock();
+        for(int stage = 1; stage <= 6; ++stage)
+        {
+            Block.lock();
+            OS::sleep(2);
+            CHECK(ut::P(0).is_sleeping());  // in the timed wait
+            switch(stage)                   // P0 preempts, succeeds and blocks on Block
+            {
+                case 1: F.signal();    break;
+                case 2: Msg.send();    break;
+                case 3: M.unlock();    break;
+                case 4: C.push(1);     break;
+                case 5: C.push(2);     break;
+                case 6: C.write(d, 2); break;
+            }
+            CHECK(ut::P(0).is_suspended());
+            CHECK(!ut::P(0).is_sleeping());
+            Block.unlock();                 // P0 goes on to its next wait
+        }
+    });
+}
+
+//==============================================================================
+//
+//    channel: who wakes whom
+//
+UT_TEST(channel, push_front_wakes_consumer)
+{
+    static channel<int, 2> C;
+    ut::proc(0, []{ int x = 0; C.pop(x); T("P0:%d", x); });
+    ut::proc(1, []{ C.push_front(7); T("P1"); });
+    ut::at_end([]{ CHECK_TRACE("P0:7 P1"); });
+}
+
+UT_TEST(channel, write_wakes_consumer)
+{
+    static channel<int, 4> C;
+    ut::proc(0, []{ int x = 0; C.pop(x); T("P0:%d", x); });
+    ut::proc(1, []{ const int d[2] = { 5, 6 }; C.write(d, 2); T("P1"); });
+    ut::at_end([]{ CHECK_TRACE("P0:5 P1"); });
+}
+
+UT_TEST(channel, consumer_that_waited_wakes_producer)
+{
+    // P1 waits for data. P0 pushes one item (P1 becomes ready), then blocks on
+    // the full channel. P1's pop, on its "after waiting" path, must wake P0.
+    static channel<int, 1> C;
+    ut::proc(1, []{ int x = 0; C.pop(x); T("P1:%d", x); });
+    ut::proc(0, []{ OS::sleep(1); C.push(1); C.push(2); T("P0"); });
+    ut::at_end([]{ CHECK_TRACE("P0 P1:1"); CHECK_EQ(C.get_count(), 1); });
+}
+
+UT_TEST(channel, pop_back_wakes_producer)
+{
+    static channel<int, 1> C;
+    ut::proc(0, []{ C.push(1); C.push(2); T("P0"); });
+    ut::proc(1, []{ int x = 0; C.pop_back(x); T("P1:%d", x); });
+    ut::at_end([]{ CHECK_TRACE("P0 P1:1"); });
+}
+
+UT_TEST(channel, pop_back_consumer_that_waited_wakes_producer)
+{
+    static channel<int, 1> C;
+    ut::proc(1, []{ int x = 0; C.pop_back(x); T("P1:%d", x); });
+    ut::proc(0, []{ OS::sleep(1); C.push(1); C.push(2); T("P0"); });
+    ut::at_end([]{ CHECK_TRACE("P0 P1:1"); });
+}
+
+UT_TEST(channel, read_wakes_producer)
+{
+    static channel<int, 2> C;
+    ut::proc(0, []{ const int d[2] = { 1, 2 }; C.write(d, 2); C.write(d, 2); T("P0"); });
+    ut::proc(1, []{ int o[2]; C.read(o, 2); T("P1:%d,%d", o[0], o[1]); });
+    ut::at_end([]{ CHECK_TRACE("P0 P1:1,2"); });
+}
+
+#ifndef UT_V52
+UT_TEST(channel, try_push_front_wakes_consumer)
+{
+    static channel<int, 2> C;
+    ut::proc(0, []{ int x = 0; C.pop(x); T("P0:%d", x); });
+    ut::proc(1, []{ CHECK(C.try_push_front(3)); T("P1"); });
+    ut::at_end([]{ CHECK_TRACE("P0:3 P1"); });
+}
+#endif
