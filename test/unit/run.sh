@@ -40,4 +40,8 @@ for scheme in 0 1; do
     done
   done
 done
+# get_prio_tag() on a dynamically initialized table, as in the AVR/MSP430/STM8 ports (defect 3)
+name="masktable-scheme0-order0"
+echo "=================== $name"
+"$U/build.sh" "$OUT/ut-$name" -DscmRTOS_LINUX_PRIO_MASK_TABLE=1 && "$OUT/ut-$name" "$@" || rc=1
 exit $rc
