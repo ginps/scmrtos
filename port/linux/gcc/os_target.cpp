@@ -55,6 +55,7 @@
 namespace
 {
     ucontext_t             Contexts[OS::MAX_PROCESS_COUNT];   // indexed by priority
+    void                (* EntryPoints[OS::MAX_PROCESS_COUNT])(); // process functions, indexed by priority
     ucontext_t * volatile  CurrentContext = 0;                // context of the running process
     volatile sig_atomic_t  TimerLocked    = 0;
     void (* volatile       IrqHandlers[OS::host::IRQ_COUNT])();
@@ -66,10 +67,25 @@ namespace
             return;
         sigemptyset(&OS::host::IrqSignals);
         sigaddset(&OS::host::IrqSignals, OS::host::SIG_SYSTEM_TIMER);
-        sigaddset(&OS::host::IrqSignals, OS::host::SIG_CONTEXT_SW);
+        sigaddset(&OS::host::IrqSignals, OS::host::context_sw_signal());
         for(int i = 0; i < OS::host::IRQ_COUNT; ++i)
             sigaddset(&OS::host::IrqSignals, OS::host::irq_signal(i));
         IrqSetReady = true;
+    }
+
+    //--------------------------------------------------------------------------
+    //  First code of every process. A new context starts with the interrupts
+    //  disabled and enables them itself, on its own stack: swapcontext() and
+    //  setcontext() set the signal mask of the target context before they
+    //  switch the registers, so a context that is entered with signals
+    //  unblocked can take a pending signal half-way through the switch.
+    //  Contexts saved later are always saved with the interrupts disabled
+    //  (in a critical section or in an interrupt handler).
+    void process_entry(int pr)
+    {
+        enable_interrupts();
+        EntryPoints[pr]();
+        abort();                                  // a process function never returns
     }
 
     void install(int sig, void (*handler)(int))
@@ -109,6 +125,7 @@ namespace
     //  Context switch interrupt (the analogue of Cortex-M PendSV)
     void context_switch_handler(int)
     {
+        OS::host::ContextSwitchPended = 0;
         ucontext_t * cur  = CurrentContext;
         ucontext_t * next = reinterpret_cast<ucontext_t*>(os_context_switch_hook(reinterpret_cast<stack_item_t*>(cur)));
         if(next != cur)
@@ -121,6 +138,7 @@ namespace
 }
 
 sigset_t OS::host::IrqSignals;
+volatile sig_atomic_t OS::host::ContextSwitchPended = 0;
 
 #if scmRTOS_LINUX_PRIO_MASK_TABLE == 1
 OS::TPrioMaskTable OS::PrioMaskTable;              // dynamic initialization, like AVR/MSP430/STM8
@@ -157,10 +175,11 @@ stack_item_t* OS::host::init_context(uint_fast8_t pr, stack_item_t* stack_begin,
     ctx->uc_stack.ss_sp   = reinterpret_cast<char*>(stack_end) - size;
     ctx->uc_stack.ss_size = size;
     ctx->uc_link          = 0;
-    for(int s = 1; s < NSIG; ++s)                  // a process always starts with "interrupts" enabled,
-        if(sigismember(&IrqSignals, s) == 1)       // even if it is (re)started inside a critical section
-            sigdelset(&ctx->uc_sigmask, s);
-    makecontext(ctx, exec, 0);
+    for(int s = 1; s < NSIG; ++s)                  // entered with the interrupts disabled,
+        if(sigismember(&IrqSignals, s) == 1)       // see process_entry()
+            sigaddset(&ctx->uc_sigmask, s);
+    EntryPoints[pr] = exec;
+    makecontext(ctx, reinterpret_cast<void (*)()>(process_entry), 1, static_cast<int>(pr));
 
     return reinterpret_cast<stack_item_t*>(ctx);
 }
@@ -250,7 +269,7 @@ extern "C" NORETURN void os_start(stack_item_t* sp)
 
     install(OS::host::SIG_SYSTEM_TIMER, system_timer_handler);
 #if scmRTOS_CONTEXT_SWITCH_SCHEME == 1
-    install(OS::host::SIG_CONTEXT_SW, context_switch_handler);
+    install(OS::host::context_sw_signal(), context_switch_handler);
 #endif
 
 #if scmRTOS_LINUX_TICK_MODE == 1
@@ -266,7 +285,7 @@ extern "C" NORETURN void os_start(stack_item_t* sp)
 #endif
 
     CurrentContext = reinterpret_cast<ucontext_t*>(sp);
-    setcontext(CurrentContext);                    // also unblocks the interrupts (process mask)
+    setcontext(CurrentContext);                    // the process enables the interrupts itself
 
     perror("scmRTOS linux port: setcontext");
     abort();

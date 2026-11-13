@@ -20,13 +20,20 @@ The whole RTOS runs in one Linux thread.
 | Process "stack pointer" | address of its `ucontext_t` |
 | Interrupt | POSIX signal |
 | System timer | `SIGALRM` (from `setitimer()` or `OS::sim_tick()`) |
-| Context switch software interrupt (scheme 1, like PendSV) | `SIGUSR1` |
+| Context switch software interrupt (scheme 1, like PendSV) | `SIGRTMIN+8` |
 | User interrupts 0..7 | `SIGRTMIN+0` … `SIGRTMIN+7` |
 | Critical section | `sigprocmask()` blocks all port signals |
 
 Interrupt handlers do not nest: all port signals are blocked inside a handler.
-A pended context switch (scheme 1) is taken after the handler returns, like
-PendSV on Cortex-M.
+When several interrupts are pending, the system timer is taken first, then the
+user interrupts in ascending order, and the context switch last. That makes it
+behave like PendSV with the lowest priority on Cortex-M: an interrupt that was
+pending when the switch was requested runs first and may change the process to
+switch to.
+
+A new process starts with the interrupts disabled and enables them itself:
+`swapcontext()` sets the signal mask before it switches the registers, so a
+context must not be entered with the mask open.
 
 Configuration
 -------------
@@ -111,7 +118,7 @@ Limitations
   the program for longer than a timer period, several `SIGALRM`s merge into one.
   OS time stays consistent but falls behind wall-clock time.
 - **`SIGALRM` is taken.** Do not use `alarm()`, libc `sleep()`,
-  `setitimer(ITIMER_REAL)`, `SIGUSR1` or `SIGRTMIN..SIGRTMIN+7` in the application.
+  `setitimer(ITIMER_REAL)` or `SIGRTMIN..SIGRTMIN+8` in the application.
 - **One thread.** Do not call OS functions from other Linux threads.
 - **AddressSanitizer** needs stack-switch annotations
   (`__sanitizer_start_switch_fiber`), which the port does not have yet.

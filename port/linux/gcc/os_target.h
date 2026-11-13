@@ -47,7 +47,7 @@
 //*     The whole RTOS runs in one Linux thread:
 //*       - a process context is a ucontext_t, switched with swapcontext();
 //*       - "interrupts" are POSIX signals: the system timer is SIGALRM,
-//*         the software context-switch interrupt (scheme 1) is SIGUSR1,
+//*         the software context-switch interrupt (scheme 1) is SIGRTMIN+8,
 //*         user interrupts 0..7 are SIGRTMIN+0..7;
 //*       - the critical section blocks all these signals (sigprocmask).
 //*     See README.md next to this file.
@@ -118,7 +118,7 @@ typedef int       status_reg_t;      // unused: the critical section saves a sig
 //    Port configuration (may be set in scmRTOS_TARGET_CFG.h or on the command line)
 //
 //    scmRTOS_CONTEXT_SWITCH_SCHEME  0 - direct switch in the scheduler (default)
-//                                   1 - switch by software interrupt (SIGUSR1),
+//                                   1 - switch by software interrupt (SIGRTMIN+8),
 //                                       the same code path as Cortex-M and Zynq-7000
 //    scmRTOS_PRIORITY_ORDER         0 - ascending (default), 1 - descending
 //
@@ -190,7 +190,17 @@ namespace host
 {
     const int IRQ_COUNT        = 8;                     // user interrupts 0..7
     const int SIG_SYSTEM_TIMER = SIGALRM;
-    const int SIG_CONTEXT_SW   = SIGUSR1;
+
+    // The context switch interrupt must be the last one taken when several are
+    // pending, like PendSV with the lowest priority on Cortex-M: an interrupt
+    // that is pending when the scheduler asks for a switch runs first and may
+    // change the process to switch to. Linux delivers the lowest-numbered pending
+    // signal first, so the context switch uses a number above all the others.
+    INLINE int context_sw_signal() { return SIGRTMIN + IRQ_COUNT; }
+
+    // "Pended" bit of the context switch interrupt: real-time signals queue,
+    // a pended interrupt does not.
+    extern volatile sig_atomic_t ContextSwitchPended;
     INLINE int irq_signal(int n) { return SIGRTMIN + n; }
 
     // the set of all signals that the port treats as interrupts
@@ -276,8 +286,15 @@ namespace OS
 {
 #if scmRTOS_CONTEXT_SWITCH_SCHEME == 1
     // Pend the context switch interrupt (like PendSV): it is taken when the
-    // signals are unblocked, after any interrupt handler that is running now.
-    INLINE void raise_context_switch()   { raise(host::SIG_CONTEXT_SW); }
+    // signals are unblocked, after every other interrupt pending at that moment.
+    INLINE void raise_context_switch()
+    {
+        if(!host::ContextSwitchPended)          // always called with the interrupts disabled
+        {
+            host::ContextSwitchPended = 1;
+            raise(host::context_sw_signal());
+        }
+    }
     INLINE void enable_context_switch()  { enable_interrupts();  }
     INLINE void disable_context_switch() { disable_interrupts(); }
 #else
