@@ -118,6 +118,7 @@ def run(cmd, env=None, timeout=300):
 
 
 EXTRA_FLAGS = []
+TEST_TIMEOUT = '--timeout=1500'   # per test, ms; raised for sanitizer builds
 FUZZ_SEEDS = 0
 
 
@@ -140,7 +141,7 @@ def test_mutant(m, tree):
                 if 'static assertion failed' in out:
                     return 'killed', 'static_assert'
                 return 'invalid', out.strip().split('\n')[0][:200]
-            cmds = [[exe, '-x', '--timeout=1500']]
+            cmds = [[exe, '-x', TEST_TIMEOUT]]
             if FUZZ_SEEDS and not is_launch:
                 cmds.append([exe, '-x', '--timeout=3000', '--seeds=1-%d' % FUZZ_SEEDS, 'fuzz'])
             for cmd in cmds:
@@ -157,7 +158,7 @@ def test_mutant(m, tree):
                 rc, out = run([os.path.join(tree, 'test/unit/build.sh'), exe, '-DscmRTOS_SUSPENDED_PROCESS_ENABLE=0'] + cfg + EXTRA_FLAGS, env)
                 if rc != 0:
                     return ('killed', 'static_assert') if 'static assertion failed' in out else ('invalid', out.strip().split('\n')[0][:200])
-                rc, out = run([exe, '-x', '--timeout=1500'], env=env, timeout=180)
+                rc, out = run([exe, '-x', TEST_TIMEOUT], env=env, timeout=180)
                 if rc != 0:
                     why = [l for l in out.split('\n') if l.startswith('[ FAIL ]')]
                     return 'killed', (why[0][9:] if why else 'runner: ' + out[-100:]).strip()
@@ -184,6 +185,9 @@ def main():
     src = os.path.realpath(a.src)
     global EXTRA_FLAGS, FUZZ_SEEDS
     EXTRA_FLAGS = a.cxxflags.split()
+    global TEST_TIMEOUT
+    if 'sanitize' in a.cxxflags:
+        TEST_TIMEOUT = '--timeout=6000'   # atomic tests run slower than 1.5 s under ASan
     FUZZ_SEEDS = a.fuzz_seeds
 
     mutants = generate(src, a.covered, a.files, set(a.ops.split(',')) if a.ops else None)
@@ -213,7 +217,7 @@ def main():
                ASAN_OPTIONS='detect_stack_use_after_return=0:detect_leaks=0')
     for cfg in CONFIGS:
         rc, out = run([os.path.join(trees[0], 'test/unit/build.sh'), os.path.join(trees[0], 'ut')] + cfg + EXTRA_FLAGS, env)
-        rc2, out2 = run([os.path.join(trees[0], 'ut'), '-x', '--timeout=1500'], env=env) if rc == 0 else (1, '')
+        rc2, out2 = run([os.path.join(trees[0], 'ut'), '-x', TEST_TIMEOUT], env=env) if rc == 0 else (1, '')
         if rc or rc2:
             sys.exit('baseline does not pass:\n' + out + out2)
 

@@ -3,7 +3,7 @@ scmRTOS unit tests
 
 ([Русская версия](README_ru.md))
 
-Tests of the scmRTOS kernel, services and extensions: 261 scenario tests and
+Tests of the scmRTOS kernel, services and extensions: 264 scenario tests and
 several further levels (see "Test levels"). They run on Linux through the test
 port `port/linux/gcc`. The scenario tests use manual tick mode, so their result
 is deterministic down to the tick and the order of context switches.
@@ -48,7 +48,7 @@ scheme 0/1 x priority order 0/1":
 
 | Level | Program | What it gives | Runs |
 | --- | --- | --- | --- |
-| Scenario tests | main, process restart off/on | exact switch order and tick numbers; 254 / 261 tests | 8 |
+| Scenario tests | main, process restart off/on | exact switch order and tick numbers; 257 / 264 tests | 8 |
 | Preemption point sweep | main, `fuzz.injected_*`, `fuzz.no_injection` | random workload of five processes; interrupts injected at critical section exits; 300 seeds per test | 4 |
 | One interrupt at every point | main, `fuzz.single_interrupt_at_every_point` | fixed scenario, 653 points x 3 kinds of interrupt = 1959 runs | 4 |
 | Asynchronous stress | main, `fuzz.async_stress`, suite `atomic` | interrupts from a real timer at any instruction | in the same runs |
@@ -193,20 +193,27 @@ python3 test/unit/mutate.py --covered /tmp/covered.txt --work /tmp/mut \
         --cxxflags "-fsanitize=address,undefined -fno-sanitize-recover=undefined"
 ```
 
-A full run takes about 40 minutes on two cores. Latest results: the first run
-killed 567 of 714 compilable mutants (79.4%); after more tests were added, a
-re-run of the survivors killed 70 more, about 89% in total. Both runs predate
-the latest additions (interrupt state checks, `atomic`, new round-robin tests);
-a final run on the current suite has not been made yet.
+A full run takes about 40 minutes on two cores. Final run (2026-11-13): of 714
+compilable mutants the main run killed 662 (kernel 95.1%, extensions 90.0%), and
+a re-run of the survivors under ASan and UBSan with three new tests killed 7
+more. In total 669 of 714, **93.7%**. Leaving out the 28 mutants that cannot be
+killed in this port at all, 669 of 686, **97.5%**. Per-file numbers and every
+survivor are in `results/mutation-final_ru.md` (Russian).
 
-Some mutants cannot be killed at all:
+| Survivors | Count | Why |
+| --- | --- | --- |
+| equivalent | 16 | behaviour does not change: `<` for `<=` in a minimum, a repeated timeout reset, `DUMMY_INSTR()` and so on |
+| critical sections in `*_isr` | 9 | handlers do not nest in the port; on Cortex-M the sections are needed |
+| critical sections around a one-word read | 2 | `is_sleeping()`, `is_suspended()`: atomic on x86-64, not on AVR |
+| port specific | 1 | the stack pointer in `context_switch_hook` is constant in the port |
+| hidden by known defects | 7 | the body of `try_pop_back` (N1), `put_off` in round-robin (N8) |
+| race windows without an interrupt injection point | 5 | `TRecursiveMutex::try_lock()`, profiler, watchdog: need instruction-level stepping |
+| defensive stops | 4 | `launch_precheck`, the corrupted-timeout check of the watchdog |
+| write into padding | 1 | `i <= proc_count` in round-robin: ASan does not see it |
 
-- critical sections in `*_isr` functions: interrupt handlers do not nest in the port;
-- equivalent changes (`<=` for `<` in a minimum, a repeated timeout reset,
-  `DUMMY_INSTR()`);
-- code hidden by a known defect (the body of `try_pop_back` - N1, `put_off` - N8);
-- saving the stack pointer in `context_switch_hook`: it is constant in the port;
-- defensive stops (`launch_precheck`, the corrupted-timeout check of the watchdog).
+For sanitizer builds `mutate.py` raises the per-test time limit from 1.5 to 6 s:
+the `atomic` tests are slower under ASan, and an equivalent mutant was killed by
+timeout.
 
 Writing a test
 --------------
