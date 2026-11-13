@@ -31,6 +31,13 @@ for scheme in 0 1; do
       LAUNCH=1 "$U/build.sh" "$OUT/ut-$name" $cfg || { rc=1; continue; }
       "$OUT/ut-$name" "$@" || rc=1
     fi
+    # process count boundaries: 1, the map type changes at 8 and 16, full maps at 7, 15, 31
+    for n in 1 7 8 15 16 31; do
+      name="wide$n-scheme$scheme-order$order"
+      echo "=================== $name"
+      WIDE=$n "$U/build.sh" "$OUT/ut-$name" $cfg -DscmRTOS_SUSPENDED_PROCESS_ENABLE=0 || { rc=1; continue; }
+      "$OUT/ut-$name" "$@" || rc=1
+    done
   done
 done
 exit $rc

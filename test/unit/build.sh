@@ -2,6 +2,7 @@
 # Build the unit test binary for one configuration.
 # Usage: build.sh <out-binary> [extra compiler flags...]
 #   LAUNCH=1  build the OS::launch() test program instead of the main one
+#   WIDE=N    build the process-count test program (test_wide.cpp) for N processes
 #   OBJDIR    compile each source to an object in OBJDIR first (needed for coverage)
 #   SRC   scmRTOS tree to test        (default: the tree this directory is in)
 #   PORT  Linux port directory        (default: $SRC/port/linux/gcc, else ../../port/linux/gcc)
@@ -48,6 +49,11 @@ if [ "$LAUNCH" = 1 ]; then
   [ -d "$SRC/ext/launch" ] || { echo "no ext/launch in $SRC" >&2; exit 3; }
   EXISTING="$U/test_launch.cpp"; EXT_SRC=""; EXT_INC="-I$SRC/ext/launch"
   set -- -DUT_EXTERNAL_PROCESSES -DscmRTOS_PROCESS_COUNT=3 "$@"
+fi
+
+if [ -n "$WIDE" ]; then
+  EXISTING="$U/test_wide.cpp"; EXT_SRC=""; EXT_INC=""
+  set -- -DUT_EXTERNAL_PROCESSES -DscmRTOS_PROCESS_COUNT=$WIDE "$@"
 fi
 
 OPT=${OPT:--O1}
