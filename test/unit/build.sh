@@ -19,7 +19,7 @@ CXX=${CXX:-g++}
 # Sources of the tree under test; develop-only parts are detected by file
 CORE="$SRC/core/os_kernel.cpp $SRC/core/os_services.cpp"
 [ -f "$SRC/core/usrlib.cpp" ] && CORE="$CORE $SRC/core/usrlib.cpp"
-EXT_INC=""; EXT_SRC=""; TESTS="$U/test_kernel.cpp $U/test_ring_buffer.cpp $U/test_services.cpp $U/test_fuzz.cpp"
+EXT_INC=""; EXT_SRC=""; TESTS="$U/test_kernel.cpp $U/test_ring_buffer.cpp $U/test_services.cpp $U/test_fuzz.cpp $U/test_atomic.cpp"
 add_ext() { # dir source test
   if [ -d "$SRC/ext/$1" ]; then
     EXT_INC="$EXT_INC -I$SRC/ext/$1"
