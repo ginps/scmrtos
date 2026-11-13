@@ -28,6 +28,8 @@ UT_TEST(launch, priorities_by_position)
             CHECK_EQ(proc_by_idx(1).priority(), pr1);
             CHECK_EQ(proc_by_idx(2).priority(), pr2);
             CHECK(&proc_by_prio(pr1) == &proc_by_idx(1));
+            for(int k = 0; k < 3; ++k)          // the process objects are properly aligned
+                CHECK_EQ(reinterpret_cast<uintptr_t>(&proc_by_idx(k)) % alignof(TBaseProcess), 0);
             CHECK_TRACE("a b c");
             ut::finish();
         })

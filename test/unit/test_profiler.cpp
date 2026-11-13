@@ -111,6 +111,25 @@ UT_TEST(profiler, generic_integral_hundredths)
     });
 }
 
+UT_TEST(profiler, generic_counters_reset_after_processing)
+{
+    static process_profiler<uint32_t> Prof;
+    ut::proc(0, []{
+        Interval = 10; Prof.advance_counters();
+        Prof.process_data();
+        CHECK_EQ(Prof.get_result(ut::prio(0)), 10000);
+        OS::sleep(1);
+        Interval = 30; Prof.advance_counters();
+    });
+    ut::proc(1, []{
+        OS::sleep(2);
+        Interval = 10; Prof.advance_counters();
+        Prof.process_data();                // only the new period: 30 vs 10
+        CHECK_EQ(Prof.get_result(ut::prio(0)), 7500);
+        CHECK_EQ(Prof.get_result(ut::prio(1)), 2500);
+    });
+}
+
 UT_TEST_DEFECT(profiler, generic_no_time_elapsed, "N4")
 {
     static process_profiler<uint32_t> Prof;

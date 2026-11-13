@@ -156,3 +156,75 @@ UT_TEST(recursive_mutex, unlock_isr_when_not_locked_is_harmless)
     ut::irq(0, []{ TISRW isr; M.unlock_isr(); });
     ut::proc(0, []{ ut::raise(0); CHECK(!M.is_locked()); M.lock(); CHECK(M.is_locked()); M.unlock(); CHECK(!M.is_locked()); });
 }
+
+UT_TEST(recursive_mutex, successful_timed_lock_leaves_no_timeout)
+{
+    static TRecursiveMutex M;  static TMutex Block;
+    ut::proc(0, []{ OS::sleep(1); CHECK(M.try_lock(100)); CHECK(M.is_locked()); Block.lock(); Block.unlock(); M.unlock(); });
+    ut::proc(1, []{
+        M.lock();
+        Block.lock();
+        OS::sleep(3);
+        CHECK(ut::P(0).is_sleeping());
+        M.unlock();
+        CHECK(ut::P(0).is_suspended());
+        CHECK(!ut::P(0).is_sleeping());
+        Block.unlock();
+    });
+    ut::at_end([]{ CHECK(!M.is_locked()); });
+}
+
+UT_TEST(recursive_mutex, unlock_wakes_nobody_but_waiters)
+{
+    static TRecursiveMutex M;
+    ut::proc(0, []{ OS::sleep(50); T("P0@%u", ut::ticks()); });
+    ut::proc(4, []{ OS::sleep(50); T("P4@%u", ut::ticks()); });
+    ut::proc(1, []{ OS::sleep(1); M.lock(); T("P1"); OS::sleep(3); M.unlock(); });
+    ut::proc(2, []{ OS::sleep(1); M.lock(); T("P2@%u", ut::ticks()); M.unlock(); });
+    ut::proc(3, []{ M.lock(); OS::sleep(2); M.unlock(); M.lock(); M.force_unlock(); });
+    ut::at_end([]{ CHECK_TRACE("P1 P2@5 P0@50 P4@50"); });
+}
+
+UT_TEST(recursive_mutex, waiter_can_nest_and_release_after_it_got_the_mutex)
+{
+    // nesting starts from 1 for a process that had to wait for the mutex
+    static TRecursiveMutex M;
+    ut::proc(0, []{
+        OS::sleep(1);
+        M.lock();                           // waits until tick 3
+        M.lock();
+        M.unlock();
+        CHECK(M.is_locked());
+        M.unlock();
+        CHECK(!M.is_locked());
+    });
+    ut::proc(1, []{ M.lock(); OS::sleep(3); M.unlock(); OS::sleep(1); CHECK(M.try_lock()); M.unlock(); });
+    ut::at_end([]{ CHECK(!M.is_locked()); });
+}
+
+UT_TEST(recursive_mutex, nesting_restarts_after_force_unlock)
+{
+    static TRecursiveMutex M;
+    ut::proc(0, []{
+        M.lock(); M.lock(); M.lock();
+        M.force_unlock();
+        CHECK(!M.is_locked());
+        M.lock();
+        M.unlock();                         // one level only
+        CHECK(!M.is_locked());
+    });
+}
+
+UT_TEST(recursive_mutex, nesting_restarts_after_force_unlock_isr)
+{
+    static TRecursiveMutex M;
+    ut::irq(0, []{ TISRW isr; M.force_unlock_isr(); });
+    ut::proc(0, []{
+        M.lock(); M.lock(); M.lock();
+        ut::raise(0);
+        CHECK(!M.is_locked());
+        M.lock();
+        M.unlock();
+        CHECK(!M.is_locked());
+    });
+}

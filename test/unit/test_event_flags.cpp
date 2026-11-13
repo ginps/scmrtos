@@ -177,3 +177,29 @@ UT_TEST(event_flags, all_32_bits)
         CHECK_EQ(F.get(), 0);
     });
 }
+
+UT_TEST(event_flags, successful_timed_wait_leaves_no_timeout)
+{
+    // straight from a successful timed wait into TMutex::lock(), which does not
+    // touch the timeout: the process must not be "sleeping" there
+    static TEventFlags F;  static TMutex Block;
+    ut::proc(0, []{ CHECK(F.wait(0x1, efWaitAny, 100)); Block.lock(); Block.unlock(); });
+    ut::proc(1, []{
+        Block.lock();
+        OS::sleep(2);
+        CHECK(ut::P(0).is_sleeping());
+        F.set(0x1);
+        CHECK(ut::P(0).is_suspended());
+        CHECK(!ut::P(0).is_sleeping());
+        Block.unlock();
+    });
+}
+
+UT_TEST(event_flags, set_wakes_nobody_but_waiters)
+{
+    static TEventFlags F;
+    ut::proc(0, []{ OS::sleep(50); T("P0@%u", ut::ticks()); });
+    ut::proc(4, []{ OS::sleep(50); T("P4@%u", ut::ticks()); });
+    ut::proc(2, []{ OS::sleep(5); F.set(0x3); F.clear(0x1); F.try_wait(0x2, efWaitAny); });
+    ut::at_end([]{ CHECK_TRACE("P0@50 P4@50"); });
+}

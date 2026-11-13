@@ -8,6 +8,8 @@
 //******************************************************************************
 #include "utest.h"
 #include <watch_dog_os_ext.h>
+#include <new>
+#include <string.h>
 
 using namespace OS;
 #define T ut::trace
@@ -101,6 +103,39 @@ UT_TEST(watchdog, the_starving_process_is_reported)
     ut::proc(3, []{ OS::sleep(1000); }, ut::DAEMON);
     ut::max_ticks(100);
     ut::at_end([]{ CHECK_EQ(RebootPrio, ut::prio(3)); CHECK_EQ(RebootTick, 4); });
+}
+
+UT_TEST(watchdog, highest_and_lowest_process_are_monitored)
+{
+    // nobody is "asleep" initially, whatever its priority
+    start_watchdog();
+    Wdg->register_process(ut::P(0), 6);
+    Wdg->register_process(ut::P(4), 9);
+    ut::proc(0, []{ OS::sleep(1000); }, ut::DAEMON);
+    ut::proc(4, []{ OS::sleep(1000); }, ut::DAEMON);
+    ut::max_ticks(100);
+    ut::at_end([]{ CHECK_EQ(RebootPrio, ut::prio(0)); CHECK_EQ(RebootTick, 6); });
+}
+
+UT_TEST(watchdog, lowest_process_is_monitored)
+{
+    start_watchdog();
+    Wdg->register_process(ut::P(4), 9);
+    ut::proc(4, []{ OS::sleep(1000); }, ut::DAEMON);
+    ut::max_ticks(100);
+    ut::at_end([]{ CHECK_EQ(RebootPrio, ut::prio(4)); CHECK_EQ(RebootTick, 9); });
+}
+
+UT_TEST(watchdog, constructor_clears_the_table)
+{
+    // an object that is not static: its memory is not zero beforehand
+    alignas(WatchdogExtension) static unsigned char raw[sizeof(WatchdogExtension)];
+    memset(raw, 0xA5, sizeof(raw));
+    Wdg = new (raw) WatchdogExtension;
+    ut::on_systimer([]{ ++TimerIrqs; Wdg->tick(); });
+    Wdg->register_process(ut::P(1), 4);
+    ut::proc(1, []{ for(int i = 0; i < 10; ++i) { OS::sleep(3); Wdg->alive(); } });
+    ut::at_end([]{ CHECK_EQ(RebootPrio, -1); CHECK_EQ(Feeds, 30); });
 }
 
 UT_TEST(watchdog, unregistered_processes_are_not_monitored)

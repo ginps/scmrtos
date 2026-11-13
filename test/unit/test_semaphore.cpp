@@ -130,3 +130,28 @@ UT_TEST(semaphore, counting_resource_pool)
     for(int i = 0; i < 4; ++i) ut::proc(i, W::body);
     ut::at_end([]{ CHECK_EQ(MaxHolders, 2); CHECK_EQ(Done, 4); CHECK_EQ(S.get_count(), 2); });
 }
+
+UT_TEST(semaphore, successful_timed_acquire_leaves_no_timeout)
+{
+    static TSemaphore S(1, 0);  static TMutex Block;
+    ut::proc(0, []{ CHECK(S.acquire(100)); Block.lock(); Block.unlock(); });
+    ut::proc(1, []{
+        Block.lock();
+        OS::sleep(2);
+        CHECK(ut::P(0).is_sleeping());
+        S.release();
+        CHECK(ut::P(0).is_suspended());
+        CHECK(!ut::P(0).is_sleeping());
+        Block.unlock();
+    });
+}
+
+UT_TEST(semaphore, release_wakes_nobody_but_waiters)
+{
+    static TSemaphore S(3, 0);
+    ut::proc(0, []{ OS::sleep(50); T("P0@%u", ut::ticks()); });
+    ut::proc(4, []{ OS::sleep(50); T("P4@%u", ut::ticks()); });
+    ut::proc(1, []{ OS::sleep(2); S.acquire(); T("P1@%u", ut::ticks()); });
+    ut::proc(2, []{ OS::sleep(5); S.release(); S.release(); CHECK_EQ(S.get_count(), 1); });
+    ut::at_end([]{ CHECK_TRACE("P1@5 P0@50 P4@50"); });
+}
