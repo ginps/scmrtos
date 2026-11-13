@@ -3,7 +3,7 @@ scmRTOS unit tests
 
 ([Русская версия](README_ru.md))
 
-Tests of the scmRTOS kernel, services and extensions: 264 scenario tests and
+Tests of the scmRTOS kernel, services and extensions: 271 scenario tests and
 several further levels (see "Test levels"). They run on Linux through the test
 port `port/linux/gcc`. The scenario tests use manual tick mode, so their result
 is deterministic down to the tick and the order of context switches.
@@ -48,7 +48,7 @@ scheme 0/1 x priority order 0/1":
 
 | Level | Program | What it gives | Runs |
 | --- | --- | --- | --- |
-| Scenario tests | main, process restart off/on | exact switch order and tick numbers; 257 / 264 tests | 8 |
+| Scenario tests | main, process restart off/on | exact switch order and tick numbers; 264 / 271 tests | 8 |
 | Preemption point sweep | main, `fuzz.injected_*`, `fuzz.no_injection` | random workload of five processes; interrupts injected at critical section exits; 300 seeds per test | 4 |
 | One interrupt at every point | main, `fuzz.single_interrupt_at_every_point` | fixed scenario, 653 points x 3 kinds of interrupt = 1959 runs | 4 |
 | Asynchronous stress | main, `fuzz.async_stress`, suite `atomic` | interrupts from a real timer at any instruction | in the same runs |
@@ -144,7 +144,7 @@ Defect 1 (16-bit masks) does not show on a 64-bit host; `test/target16/run.sh`
 checks it. On a tree with defect 2 the fuzz tests are marked as a known defect:
 they find it within a few seeds.
 
-Totals of the main program: develop - 15 known defects (16 with the mask
+Totals of the main program: develop - 17 known defects (18 with the mask
 table), v5.2.0 - 11-12, v5.2.0 with patches 1-6 - 5; no unexpected failures.
 
 Coverage

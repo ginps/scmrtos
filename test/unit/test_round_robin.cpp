@@ -5,6 +5,8 @@
 //******************************************************************************
 #include "utest.h"
 #include <round-robin.h>
+#include <new>
+#include <string.h>
 
 using namespace OS;
 #define T ut::trace
@@ -244,4 +246,20 @@ UT_TEST(round_robin, nobody_eligible_keeps_the_turn_where_it_was)
     //  t14    P1 wakes while inactive and preempts; t15 the manager stops it
     //  t16-   regular rotation P1, P2 until P1 finishes at t21
     ut::at_end([]{ CHECK_TRACE("1@0 1@1 2@2 2@3 2@8 2@9 2@10 2@11 2@12 2@13 1@14 2@15 1@16 1@17 2@18 2@19 1@20 2@22 2@23 2@24"); });
+}
+
+// The constructor must stay inside put_off[]. In round_robin_mgr<8> on LP64
+// with a 16-bit timeout_t, put_off[] ends exactly at the end of the object, so
+// a write past it lands in the bytes that follow. Smaller managers have
+// padding there, and neither the tests nor the sanitizers see such a write.
+UT_TEST(round_robin, constructor_writes_nothing_past_the_object)
+{
+    typedef round_robin_mgr<8> TMgr;
+    static_assert(sizeof(void *) != 8 || sizeof(timeout_t) != 2 || sizeof(TMgr) == 8 + 19 * 8,
+                  "layout assumed by this test");
+    alignas(TMgr) static unsigned char Buf[sizeof(TMgr) + 16];
+    memset(Buf, 0xA5, sizeof Buf);
+    new (Buf) TMgr;
+    for(size_t i = sizeof(TMgr); i < sizeof Buf; ++i)
+        CHECK_EQ(Buf[i], 0xA5);
 }

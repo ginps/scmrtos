@@ -787,6 +787,36 @@ UT_TEST_DEFECT(channel, try_pop_back_on_filled_channel, "N1")
         CHECK_EQ(C.get_count(), 1);
     });
 }
+
+UT_TEST_DEFECT(channel, try_pop_back_copies_the_item_inside_a_critical_section, "N1")
+{
+    static channel<TGuarded, 4> C;
+    ut::proc(0, []{
+        TGuarded a(1), b(2), out;
+        C.push(a); C.push(b);
+        unsigned before = Copies;
+        CHECK(C.try_pop_back(out));
+        CHECK_EQ(out.v, 2);
+        CHECK(Copies > before);                     // the probe saw the copy
+        CHECK_EQ(UnprotectedCopies, 0);
+    });
+}
+
+UT_TEST_DEFECT(channel, try_pop_back_wakes_a_producer_waiting_for_room, "N1")
+{
+    static channel<int, 2> C;
+    ut::proc(0, []{
+        OS::sleep(1);                               // P1 has filled the channel and waits
+        int x = -1;
+        CHECK(C.try_pop_back(x));
+        CHECK_EQ(x, 2);
+        T("P0");
+        OS::sleep(1);
+        CHECK_EQ(C.get_count(), 2);                 // P1's third item went in
+    });
+    ut::proc(1, []{ C.push(1); C.push(2); C.push(3); T("P1@%u", ut::ticks()); });
+    ut::at_end([]{ CHECK_TRACE("P0 P1@1"); });
+}
 #endif // UT_V52
 
 //==============================================================================

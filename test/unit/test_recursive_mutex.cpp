@@ -228,3 +228,33 @@ UT_TEST(recursive_mutex, nesting_restarts_after_force_unlock_isr)
         CHECK(!M.is_locked());
     });
 }
+
+// try_lock() must never block. The timer runs from a real timer and wakes P0
+// at any instruction of P1; P0 takes the mutex with try_lock() and holds it over
+// a tick while P1 runs. P1 only calls try_lock() and unlock(). If try_lock()
+// read the owner, was preempted and only then took the mutex with lock(), P1
+// would block there while P0 holds it.
+UT_TEST(recursive_mutex, try_lock_never_blocks_under_preemption)
+{
+    static TRecursiveMutex M;
+    static unsigned Held, Blocked;
+    static volatile unsigned Mine;
+    ut::async_ticks(25);
+    ut::max_ticks(200000);
+    ut::proc(0, []{
+        for(unsigned i = 0; i < 20000; ++i)
+        {
+            OS::sleep(1);
+            if(!M.try_lock())
+                continue;
+            ++Held;
+            OS::sleep(1);                           // P1 runs while P0 holds the mutex
+            if(ut::P(1).is_suspended()) ++Blocked;
+            M.unlock();
+        }
+        CHECK_EQ(Blocked, 0);
+        CHECK(Held > 0);
+        CHECK(Mine > 0);
+    });
+    ut::proc(1, []{ for(;;) if(M.try_lock()) { Mine = Mine + 1; M.unlock(); } }, ut::DAEMON);
+}

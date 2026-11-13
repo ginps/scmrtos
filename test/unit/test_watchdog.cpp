@@ -169,3 +169,31 @@ UT_TEST_DEFECT(watchdog, asleep_from_unregistered_process, "N3")
     ut::proc(1, []{ Wdg->asleep(); T("unreachable"); }, ut::DAEMON);
     ut::at_end([]{ CHECK_EQ(RebootPrio, ut::prio(1)); });
 }
+
+// asleep() and alive() update the shared m_asleep word. The timer runs from a
+// real timer and wakes P0 at any instruction of P1, which calls asleep() and
+// alive() in a loop. P0 sleeps alternately marked asleep and not. If P1's update
+// was not atomic, it would write back m_asleep read before P0 changed its bit:
+// P0's bit would stay set after alive(), and P0's next asleep() would count as
+// a second one and reboot. The timeouts are long, so delays of the host
+// scheduler cannot trigger a reboot.
+UT_TEST(watchdog, asleep_and_alive_keep_bits_of_other_processes_under_preemption)
+{
+    start_watchdog();
+    Wdg->register_process(ut::P(0), 60000);
+    Wdg->register_process(ut::P(1), 60000);
+    ut::async_ticks(25);
+    ut::max_ticks(200000);
+    ut::proc(0, []{
+        for(unsigned i = 0; i < 10000; ++i)
+        {
+            Wdg->asleep();
+            OS::sleep(1);
+            Wdg->alive();                           // clears the asleep state
+            Wdg->alive();
+            OS::sleep(1);                           // P1 runs with P0's bit clear
+        }
+    });
+    ut::proc(1, []{ for(;;) { Wdg->asleep(); Wdg->alive(); Wdg->alive(); } }, ut::DAEMON);
+    ut::at_end([]{ CHECK_EQ(RebootPrio, -1); });
+}
