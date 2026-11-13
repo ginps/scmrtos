@@ -11,6 +11,7 @@
 //******************************************************************************
 #include "utest.h"
 #include <string.h>
+#include <new>
 
 using namespace OS;
 #define T ut::trace
@@ -22,6 +23,19 @@ using namespace OS;
 UT_TEST(kernel, not_running_before_run)
 {
     CHECK(!os_running());
+}
+
+// os_running() asked from a global constructor. This file is linked before the
+// kernel, so the probe below is constructed before OS::Kernel is: the kernel's
+// "not running yet" mark is not set and os_running() says "running".
+namespace
+{
+    struct TEarlyProbe { bool running; TEarlyProbe() : running(os_running()) { } } EarlyProbe;
+}
+
+UT_TEST_DEFECT(kernel, not_running_in_global_constructors, "N9")
+{
+    CHECK(!EarlyProbe.running);
 }
 
 UT_TEST(kernel, running_inside_process)
@@ -66,7 +80,7 @@ UT_TEST(kernel, process_constructed_with_function_runs_it)
 }
 #endif
 
-UT_TEST(kernel, suspended_process_waits_for_start)
+UT_TEST_SUSPENDED(kernel, suspended_process_waits_for_start)
 {
     // P4 is declared pssSuspended; it must not run before start()
     ut::proc(4, []{ T("P4@%u", ut::ticks()); }, ut::SUSPENDED);
@@ -79,9 +93,9 @@ UT_TEST(kernel, suspended_process_waits_for_start)
     ut::at_end([]{ CHECK_TRACE("start P4@5"); });
 }
 
-UT_TEST(kernel, suspended_highest_process_not_chosen_by_run)
+UT_TEST(kernel, start_of_lower_process_does_not_preempt)
 {
-    // with the highest-priority process suspended, run() starts the next one
+    // P3 starts the suspended P4, which is lower: P3 keeps running
     ut::proc(4, []{ T("P4"); }, ut::SUSPENDED);
     ut::proc(3, []{ T("P3"); ut::P(4).start(); T("P3-end"); });
     ut::at_end([]{ CHECK_TRACE("P3 P3-end P4"); });   // P4 has lower priority than P3
@@ -213,6 +227,47 @@ UT_TEST(kernel, force_wake_up_ends_timed_sleep)
     ut::proc(0, []{ OS::sleep(50); T("P0@%u", ut::ticks()); });
     ut::proc(2, []{ OS::sleep(7); ut::P(0).force_wake_up(); T("P2"); });
     ut::at_end([]{ CHECK_TRACE("P0@7 P2"); });
+}
+
+UT_TEST(kernel, woken_process_is_not_sleeping)
+{
+    // wake_up() and force_wake_up() cancel the rest of the timeout
+    static TMutex Block;
+    ut::proc(0, []{ OS::sleep(100); Block.lock(); Block.unlock(); OS::sleep(100); Block.lock(); Block.unlock(); });
+    ut::proc(1, []{
+        Block.lock();
+        OS::sleep(3);
+        CHECK(ut::P(0).is_sleeping());
+        ut::P(0).wake_up();                 // P0 runs and blocks on the mutex
+        CHECK(!ut::P(0).is_sleeping());
+        Block.unlock();                     // P0 sleeps again
+        Block.lock();
+        CHECK(ut::P(0).is_sleeping());
+        ut::P(0).force_wake_up();
+        CHECK(!ut::P(0).is_sleeping());
+        Block.unlock();
+    });
+}
+
+UT_TEST(kernel, critical_section_survives_blocking_call)
+{
+    // a process that blocks inside its critical section gets it back intact
+    // when it is switched in again (the interrupt state is part of the context)
+    ut::proc(0, []{
+        TCritSect cs;
+        OS::sleep(2);                       // switched out and in again
+        unsigned t = ut::ticks();
+        ut::tick();
+        CHECK_EQ(ut::ticks(), t);           // still inside the critical section: the tick is pending
+    });
+    ut::proc(1, []{
+        static TEventFlag F;
+        TCritSect cs;
+        F.wait(1);
+        unsigned t = ut::ticks();
+        ut::tick();
+        CHECK_EQ(ut::ticks(), t);
+    });
 }
 
 UT_TEST(kernel, is_sleeping_and_is_suspended)
@@ -384,6 +439,84 @@ UT_TEST(kernel, several_interrupts)
     ut::at_end([]{ CHECK_TRACE("P1 x P0 y"); });
 }
 
+//------------------------------------------------------------------------------
+//  An interrupt taken while a context switch is already requested.
+//
+//  A process blocks: the scheduler picks the next process and requests the
+//  switch. With the software interrupt scheme the switch itself happens a moment
+//  later, when the interrupts are enabled, and an interrupt that is pending at
+//  that moment runs first. It may make the blocking process ready again, or wake
+//  a higher one; the requested switch must follow.
+//  (The first case is the lost wake-up fixed upstream in aa4e99d.)
+//
+UT_TEST(kernel, isr_signal_arriving_while_the_waiter_blocks)
+{
+    static TEventFlag Flag;
+    ut::irq(0, []{ TISRW isr; Flag.signal_isr(); });
+    ut::proc(1, []{
+        bool r;
+        {
+            TCritSect cs;
+            ut::raise(0);                   // pending until the interrupts are enabled
+            r = Flag.wait();
+        }
+        T("P1:%d", r);
+    });
+    ut::proc(2, []{ T("P2"); });
+    // P1 is ready again before anybody else runs: it must go on first
+    ut::at_end([]{ CHECK_TRACE("P1:1 P2"); });
+}
+
+UT_TEST(kernel, timeout_expiring_while_the_process_blocks)
+{
+    ut::proc(1, []{
+        {
+            TCritSect cs;
+            ut::tick();                     // the timer interrupt is pending
+            OS::sleep(1);                   // expires in that very interrupt
+        }
+        T("P1@%u", ut::ticks());
+    });
+    ut::proc(2, []{ T("P2"); });
+    ut::at_end([]{ CHECK_TRACE("P1@1 P2"); });
+}
+
+UT_TEST(kernel, isr_wakes_higher_process_while_another_blocks)
+{
+    static TEventFlag Flag;
+    ut::irq(0, []{ TISRW isr; Flag.signal_isr(); });
+    ut::proc(0, []{ Flag.wait(); T("P0"); });
+    ut::proc(1, []{
+        {
+            TCritSect cs;
+            ut::raise(0);
+            OS::sleep(3);                   // the switch to P2 is requested, then the interrupt wakes P0
+        }
+        T("P1@%u", ut::ticks());
+    });
+    ut::proc(2, []{ T("P2"); });
+    ut::at_end([]{ CHECK_TRACE("P0 P2 P1@3"); });
+}
+
+UT_TEST(kernel, two_interrupts_pending_at_once_both_run_before_the_switch)
+{
+    static TEventFlag F0, F1;
+    ut::irq(0, []{ TISRW isr; T("i0"); F0.signal_isr(); });
+    ut::irq(1, []{ TISRW isr; T("i1"); F1.signal_isr(); });
+    ut::proc(0, []{ F1.wait(); T("P0"); });
+    ut::proc(1, []{ F0.wait(); T("P1"); });
+    ut::proc(2, []{
+        {
+            TCritSect cs;
+            ut::raise(1);
+            ut::raise(0);
+        }
+        T("P2");
+    });
+    // both handlers run back to back, then the highest woken process
+    ut::at_end([]{ CHECK_TRACE("i0 i1 P0 P1 P2"); });
+}
+
 //==============================================================================
 //
 //    Context switch hook
@@ -451,6 +584,31 @@ UT_TEST(kernel, debug_stack_slack_shrinks_with_use)
     });
 }
 
+namespace
+{
+    // read access to the protected stack pool pointer, for the test only
+    struct TStackAccess : public TBaseProcess
+    {
+        static const stack_item_t * pool(const TBaseProcess & p) { return p.*(&TStackAccess::StackPool); }
+    };
+}
+
+UT_TEST(kernel, debug_stack_slack_is_exact)
+{
+    // slack = number of untouched pattern words at the bottom of the stack
+    ut::proc(0, []{
+        use_stack(8);
+        for(int i = 0; i < 4; ++i)
+        {
+            const stack_item_t * pool = TStackAccess::pool(ut::P(i));
+            size_t slack = ut::P(i).stack_slack();
+            CHECK(slack > 0 && slack < ut::P(i).stack_size());
+            CHECK(pool[slack - 1] == scmRTOS_STACK_PATTERN);
+            CHECK(pool[slack] != scmRTOS_STACK_PATTERN);
+        }
+    });
+}
+
 UT_TEST(kernel, debug_waiting_for)
 {
     static TMutex M;
@@ -490,6 +648,92 @@ UT_TEST(kernel, restart_sleeping_process)
     });
     ut::max_ticks(400);
     ut::at_end([]{ CHECK_TRACE("P1-run1 started P1-run2"); CHECK_EQ(Runs, 2); });
+}
+
+UT_TEST(kernel, restart_ready_process_stops_it)
+{
+    // P3 is ready but has not run yet: terminate() must take it out of the ready map
+    static int Runs;
+    ut::proc(3, []{ ++Runs; }, ut::DAEMON);
+    ut::proc(0, []{
+        ut::terminate(3);
+        CHECK(ut::P(3).is_suspended());
+        OS::sleep(5);
+        CHECK_EQ(Runs, 0);
+        ut::P(3).start();
+        OS::sleep(1);
+        CHECK_EQ(Runs, 1);
+    });
+}
+
+#if scmRTOS_DEBUG_ENABLE == 1
+UT_TEST(kernel, restart_clears_waiting_for)
+{
+    static TMutex M;
+    ut::proc(1, []{ M.lock(); M.unlock(); }, ut::DAEMON);
+    ut::proc(0, []{
+        M.lock();
+        OS::sleep(1);
+        CHECK((void*)ut::P(1).waiting_for() == (void*)&M);
+        ut::terminate(1);
+        CHECK(ut::P(1).waiting_for() == 0);
+        M.unlock();
+    });
+}
+#endif
+
+//------------------------------------------------------------------------------
+//  The kernel remembers which waiting map a blocked process is in, so that
+//  terminate() can take the process out of it. That note must not outlive the
+//  wait. The mutex below lives in a buffer; after it is destroyed the buffer
+//  is filled with ones, and a restart of the process must leave it alone.
+//
+namespace
+{
+    alignas(TMutex) unsigned char MutexBuf[sizeof(TMutex)];
+    TMutex * BufMutex;
+
+    void make_buf_mutex()   { BufMutex = new(MutexBuf) TMutex; }
+    void scrap_buf_mutex()  { BufMutex->~TMutex(); memset(MutexBuf, 0xFF, sizeof(MutexBuf)); }
+    bool buf_untouched()
+    {
+        for(size_t i = 0; i < sizeof(MutexBuf); ++i)
+            if(MutexBuf[i] != 0xFF) return false;
+        return true;
+    }
+}
+
+UT_TEST(kernel, restart_leaves_alone_a_service_the_process_finished_waiting_for)
+{
+    make_buf_mutex();
+    ut::proc(1, []{ BufMutex->lock(); BufMutex->unlock(); T("P1-got-it"); OS::sleep(); }, ut::DAEMON);
+    ut::proc(0, []{
+        BufMutex->lock();
+        OS::sleep(1);                       // P1 blocks on the mutex
+        BufMutex->unlock();
+        OS::sleep(1);                       // P1 gets it, releases it, sleeps
+        CHECK_TRACE("P1-got-it");
+        scrap_buf_mutex();
+        ut::terminate(1);                   // P1 waits for nothing now
+        CHECK(buf_untouched());
+    });
+}
+
+UT_TEST(kernel, second_restart_leaves_alone_the_service_of_the_first)
+{
+    make_buf_mutex();
+    ut::proc(1, []{ BufMutex->lock(); T("unreachable"); }, ut::DAEMON);
+    ut::proc(0, []{
+        BufMutex->lock();
+        OS::sleep(1);                       // P1 blocks on the mutex
+        ut::terminate(1);                   // takes P1 out of the mutex's waiting map
+        BufMutex->unlock();
+        CHECK(!BufMutex->is_locked());
+        scrap_buf_mutex();
+        ut::terminate(1);                   // P1 is stopped and waits for nothing
+        CHECK(buf_untouched());
+        CHECK_TRACE("");
+    });
 }
 
 UT_TEST(kernel, restart_process_waiting_for_mutex)
