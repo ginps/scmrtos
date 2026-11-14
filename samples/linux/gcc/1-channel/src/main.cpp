@@ -1,6 +1,6 @@
 //******************************************************************************
 //*
-//*     scmRTOS Linux test port: example
+//*     scmRTOS sample for the Linux port: 1-channel
 //*
 //*     Three processes in real time (1 ms system timer):
 //*       - Blinker  (pr0): toggles a "LED" every 250 ms;

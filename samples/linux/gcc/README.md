@@ -7,6 +7,15 @@ The port runs the scmRTOS kernel as an ordinary Linux program. It is meant for
 debugging and testing the kernel, services, extensions and application logic
 without target hardware: under a debugger, with sanitizers, in CI.
 
+Where things are:
+
+| Path | Contents |
+| --- | --- |
+| `port/linux/gcc/` | the port: `os_target.h`, `os_target.cpp` |
+| `samples/linux/gcc/` | samples (this directory) |
+| `test/linux/` | port self-tests |
+| `test/unit/` | unit tests of the kernel, services and extensions |
+
 The port works with v5.2.0 and with the develop branch.
 
 How it works
@@ -77,14 +86,14 @@ static void uart_rx_irq()
 }
 ```
 
-Example
+Samples
 -------
 
-`example/` - three processes in real time: a "LED" blinker, a producer driven
+`1-channel/` - three processes in real time: a "LED" blinker, a producer driven
 by a POSIX timer interrupt and a consumer behind a channel.
 
 ```sh
-cd example
+cd samples/linux/gcc/1-channel
 make run                 # scheme 0
 make clean run SCHEME=1 ORDER=1
 ```
@@ -93,11 +102,11 @@ Port self-tests
 ---------------
 
 ```sh
-test/run.sh              # kernel from this tree
-test/run.sh /path/to/scmrtos
+test/linux/run.sh              # kernel from this tree
+test/linux/run.sh /path/to/scmrtos
 ```
 
-`test/run.sh` builds and runs two tests for all four combinations of scheme
+`test/linux/run.sh` builds and runs two tests for all four combinations of scheme
 and priority order:
 
 - `test_manual.cpp` - manual ticks: the exact switch order at start-up, on

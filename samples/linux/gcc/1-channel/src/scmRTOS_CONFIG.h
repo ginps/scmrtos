@@ -1,6 +1,6 @@
 //******************************************************************************
 //*
-//*     scmRTOS project configuration: Linux test port example
+//*     scmRTOS project configuration: Linux port sample 1-channel
 //*
 //******************************************************************************
 #ifndef scmRTOS_CONFIG_H
