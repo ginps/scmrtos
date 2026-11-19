@@ -110,6 +110,144 @@ void OS::TBaseProcess::init_stack_frame( stack_item_t * Stack
 }
 
 /*
+ * PendSV handler for ARMv7-M (Cortex-M3/M4(F)/M7(F)) - context switch.
+ * ARMv6-M handler is in os_target_asm.S.
+ *
+ * See os_target_asm.S for the description of the method. Interrupts are
+ * masked the same way as in TCritSect:
+ *   - default: all interrupts (PRIMASK);
+ *   - scmRTOS_OS_DI_LEVEL defined: OS interrupts only (BASEPRI), interrupts
+ *     with higher priority may preempt the context switch.
+ * PendSV has the lowest priority, so it runs only when PRIMASK == 0 and
+ * BASEPRI == 0; clearing the mask on exit restores the state on entry.
+ *
+ * Defines to determine arch:
+ * M3/M4/M7 without FPU : __SOFTFP__ defined.
+ * M4F/M7F core : __SOFTFP__ not defined (FPU present).
+ */
+#if (!defined __ARM_ARCH_6M__)
+
+#if scmRTOS_CRITSECT_BASEPRI == 1
+#define OS_PENDSV_MASK                                                      \
+        "    MOV     R1, %[basepri]            \n" /* mask OS interrupts  */ \
+        "    MSR     BASEPRI, R1               \n"                           \
+        "    ISB                               \n"
+#define OS_PENDSV_UNMASK                                                    \
+        "    MOV     R1, #0                    \n"                           \
+        "    MSR     BASEPRI, R1               \n"
+#define OS_PENDSV_BASEPRI   scmRTOS_OS_DI_BASEPRI
+#else
+#define OS_PENDSV_MASK                                                      \
+        "    CPSID   I                         \n" /* mask all interrupts */
+#define OS_PENDSV_UNMASK                                                    \
+        "    CPSIE   I                         \n"
+#define OS_PENDSV_BASEPRI   0
+#endif
+
+extern "C" __attribute__((naked, used)) void PendSV_Handler()
+{
+    __asm__ __volatile__ (
+        OS_PENDSV_MASK                             // Prevent interruption during context switch
+#if (defined __SOFTFP__)    // M3/M4/M7 cores without FPU
+        "    MRS     R0, PSP                   \n" // PSP is process stack pointer
+        "    STMDB   R0!, {R4-R11}             \n" // Save remaining regs r4-11 on process stack
+
+        // At this point, entire context of process has been saved
+        "    PUSH    {LR}                      \n" // we must save LR (exc_return value) until exception return
+        "    LDR     R1, =os_context_switch_hook \n" // call os_context_switch_hook();
+        "    BLX     R1                        \n"
+
+        // R0 is new process SP;
+        "    LDMIA   R0!, {R4-R11}             \n" // Restore r4-11 from new process stack
+        "    MSR     PSP, R0                   \n" // Load PSP with new process SP
+        OS_PENDSV_UNMASK
+        "    POP     {PC}                      \n" // Return to saved exc_return. Exception return will restore remaining context
+#else                       // Core with FPU (Cortex-M4F / Cortex-M7F)
+        "    MRS     R0, PSP                   \n" // PSP is process stack pointer
+        "    TST     LR, #0x10                 \n" // exc_return[4]=0? (it means that current process
+        "    IT      EQ                        \n" // has active floating point context)
+        "    VSTMDBEQ R0!, {S16-S31}           \n" // if so - save it.
+        "    STMDB   R0!, {R4-R11, LR}         \n" // save remaining regs r4-11 and LR on process stack
+
+        // At this point, entire context of process has been saved
+        "    LDR     R1, =os_context_switch_hook \n" // call os_context_switch_hook();
+        "    BLX     R1                        \n"
+
+        // R0 is new process SP;
+        "    LDMIA   R0!, {R4-R11, LR}         \n" // Restore r4-11 and LR from new process stack
+        "    TST     LR, #0x10                 \n" // exc_return[4]=0? (it means that new process
+        "    IT      EQ                        \n" // has active floating point context)
+        "    VLDMIAEQ R0!, {S16-S31}           \n" // if so - restore it.
+        "    MSR     PSP, R0                   \n" // Load PSP with new process SP
+        OS_PENDSV_UNMASK
+        "    BX      LR                        \n" // Return to saved exc_return. Exception return will restore remaining context
+#endif
+        "   .ltorg                             \n" // literal pool for os_context_switch_hook address
+        :
+        : [basepri] "i" (OS_PENDSV_BASEPRI)
+    );
+}
+
+#endif // !__ARM_ARCH_6M__
+
+#if (scmRTOS_CRITSECT_BASEPRI == 1) && (scmRTOS_CHECK_ISR_PRIORITY == 1)
+
+#ifndef scmRTOS_ISR_PRIORITY_ERROR
+#define scmRTOS_ISR_PRIORITY_ERROR() __builtin_trap()
+#endif
+
+namespace
+{
+// mask of group (preemption) priority bits, SCB_AIRCR.PRIGROUP
+uint32_t group_priority_mask()
+{
+    uint32_t prigroup = (*(volatile uint32_t *)0xE000ED0CUL >> 8) & 7;
+    return (0xFFUL << (prigroup + 1)) & 0xFF;
+}
+
+/*
+ * With priority grouping the level must have a non-zero group priority:
+ * otherwise BASEPRI masks all interrupts (e.g. NVIC_PRIORITYGROUP_2 with
+ * scmRTOS_OS_DI_LEVEL < 4 on a 4-bit core).
+ */
+void check_os_di_level()
+{
+    if((scmRTOS_OS_DI_BASEPRI & group_priority_mask()) == 0)
+        scmRTOS_ISR_PRIORITY_ERROR();
+}
+}
+
+/*
+ * Check that the active exception may use OS services: its group
+ * priority must not be higher than scmRTOS_OS_DI_LEVEL.
+ */
+void OS::os_check_isr_priority()
+{
+    uint32_t exc;
+    __asm__ __volatile__ ("MRS %0, IPSR" : "=r"(exc));
+
+    uint32_t prio;
+    if(exc >= 16)                                   // external interrupt: NVIC_IPR
+        prio = ((volatile uint8_t *)0xE000E400UL)[exc - 16];
+    else if(exc >= 4)                               // configurable system handler: SCB_SHPR
+        prio = ((volatile uint8_t *)0xE000ED18UL)[exc - 4];
+    else if(exc == 0)                               // thread mode: not an ISR
+        return;
+    else                                            // NMI, HardFault: fixed negative priority
+    {
+        scmRTOS_ISR_PRIORITY_ERROR();
+        return;
+    }
+
+    uint32_t group_mask = group_priority_mask();
+
+    if((prio & group_mask) < (scmRTOS_OS_DI_BASEPRI & group_mask))
+        scmRTOS_ISR_PRIORITY_ERROR();
+}
+
+#endif
+
+/*
  * By default port uses SysTick timer as a system timer.
  */
 #if (! defined SCMRTOS_USE_CUSTOM_TIMER)
@@ -237,11 +375,16 @@ void UNLOCK_SYSTEM_TIMER() { SysTickRegisters->CTRL |= NVIC_ST_CTRL_INTEN; }
  * Note(s) : 1) os_start() MUST:
  *              a) Setup PendSV and SysTick exception priority to lowest;
  *              b) Call System timer initialization function;
- *              c) Enable interrupts (tasks will run with interrupts enabled);
+ *              c) Enable interrupts (tasks will run with interrupts enabled,
+ *                 BASEPRI = 0 if scmRTOS_OS_DI_LEVEL is used);
  *              d) Jump to entry point of the highest priority process.
  */
 extern "C" NORETURN void os_start(stack_item_t *sp)
 {
+#if (scmRTOS_CRITSECT_BASEPRI == 1) && (scmRTOS_CHECK_ISR_PRIORITY == 1)
+    check_os_di_level();
+#endif
+
     // Set PendSV lowest priority value
 #if (defined SHP3_WORD_ACCESS)
     SHPR3 |= (0xFF << 16);
@@ -267,6 +410,10 @@ extern "C" NORETURN void os_start(stack_item_t *sp)
         "    ISB                               \n" // Insert a barrier
         "    LDR     R1, =__init_system_timer  \n" //
         "    BLX     R1                        \n" //
+#if scmRTOS_CRITSECT_BASEPRI == 1
+        "    MOV     R0, #0                    \n" // Processes run with OS interrupts unmasked
+        "    MSR     BASEPRI, R0               \n"
+#endif
         "    CPSIE   I                         \n" // Enable interrupts at processor level
         "    BX      R4                        \n" // Jump to process exec() function
         "   .ltorg                             \n" // To prevent assembler error "offset out of range" with LTO enabled

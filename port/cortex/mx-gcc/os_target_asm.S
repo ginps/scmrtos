@@ -50,10 +50,6 @@
     .text
     .align 2
 
-    .extern os_context_switch_hook
-    .global PendSV_Handler
-
-
 /*
  * PendSV is used to perform a context switch. This is a recommended method for Cortex-M.
  * This is because the Cortex-M automatically saves half of the processor context
@@ -66,16 +62,20 @@
  * we can be sure that it will run only when no other exception or interrupt is active, and
  * therefore safe to assume that context being switched out was using the process stack (PSP).
  *
- * Defines to determine ach:
- * M0(+) core : __ARM_ARCH_6M__ defined.
- * M3/M4/M7 without FPU : __SOFTFP__ defined, __ARM_ARCH_6M__ not defined.
- * M4F/M7F core : __SOFTFP__ not defined (FPU present).
+ * This file contains PendSV handler for ARMv6-M (Cortex-M0(+)/M1) only.
+ * PendSV handler for ARMv7-M (Cortex-M3/M4(F)/M7(F)) is in os_target.cpp:
+ * the way it masks interrupts depends on scmRTOS_OS_DI_LEVEL, which is
+ * defined in scmRTOS_TARGET_CFG.h and is not visible here.
  */
+
+#if (defined __ARM_ARCH_6M__)
+
+    .extern os_context_switch_hook
+    .global PendSV_Handler
 
 .thumb_func
 PendSV_Handler:
 
-#if (defined __ARM_ARCH_6M__)
     // Cortex-M0(+)/Cortex-M1
     CPSID   I                   // Prevent interruption during context switch
     MRS     R0, PSP             // Load process stack pointer to R0
@@ -107,45 +107,6 @@ PendSV_Handler:
     POP     {PC}               // Return to saved exc_return. Exception return will restore remaining context
 
 
-#elif (defined __SOFTFP__)
-    // M3/M4/M7 cores without FPU
-    CPSID   I                  // Prevent interruption during context switch
-    MRS     R0, PSP            // PSP is process stack pointer
-    STMDB   R0!, {R4-R11}      // Save remaining regs r4-11 on process stack
-
-// At this point, entire context of process has been saved
-    PUSH    {LR}               // we must save LR (exc_return value) until exception return
-    LDR     R1, =os_context_switch_hook     // call os_context_switch_hook();
-    BLX     R1
-
-// R0 is new process SP;
-    LDMIA   R0!, {R4-R11}      // Restore r4-11 from new process stack
-    MSR     PSP, R0            // Load PSP with new process SP
-    CPSIE   I
-    POP     {PC}               // Return to saved exc_return. Exception return will restore remaining context
-
-
-#else
-    // Core with FPU (Cortex-M4F / Cortex-M7F)
-    CPSID     I                  // Prevent interruption during context switch
-    MRS       R0, PSP            // PSP is process stack pointer
-    TST       LR, #0x10          // exc_return[4]=0? (it means that current process
-    IT        EQ                 // has active floating point context)
-    VSTMDBEQ  R0!, {S16-S31}     // if so - save it.
-    STMDB     R0!, {R4-R11, LR}  // save remaining regs r4-11 and LR on process stack
-
-// At this point, entire context of process has been saved
-    LDR     R1, =os_context_switch_hook     // call os_context_switch_hook();
-    BLX     R1
-
-// R0 is new process SP;
-    LDMIA     R0!, {R4-R11, LR}  // Restore r4-11 and LR from new process stack
-    TST       LR, #0x10          // exc_return[4]=0? (it means that new process
-    IT        EQ                 // has active floating point context)
-    VLDMIAEQ  R0!, {S16-S31}     // if so - restore it.
-    MSR       PSP, R0            // Load PSP with new process SP
-    CPSIE     I
-    BX        LR                 // Return to saved exc_return. Exception return will restore remaining context
 #endif
 
 .end
