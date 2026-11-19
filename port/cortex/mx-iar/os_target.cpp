@@ -108,6 +108,75 @@ void OS::TBaseProcess::init_stack_frame( stack_item_t * Stack
 #endif
 
 /*
+ * Mask used by PendSV_Handler (os_target_asm.S), which cannot see the
+ * project configuration:
+ *   0     - mask all interrupts (PRIMASK);
+ *   not 0 - BASEPRI value, OS interrupts only (scmRTOS_OS_DI_LEVEL).
+ */
+#if scmRTOS_CRITSECT_BASEPRI == 1
+extern "C" __attribute__((used)) const uint32_t os_context_switch_basepri = scmRTOS_OS_DI_BASEPRI;
+#else
+extern "C" __attribute__((used)) const uint32_t os_context_switch_basepri = 0;
+#endif
+
+#if (scmRTOS_CRITSECT_BASEPRI == 1) && (scmRTOS_CHECK_ISR_PRIORITY == 1)
+
+#ifndef scmRTOS_ISR_PRIORITY_ERROR
+#define scmRTOS_ISR_PRIORITY_ERROR() for(;;) { }
+#endif
+
+namespace
+{
+// mask of group (preemption) priority bits, SCB_AIRCR.PRIGROUP
+uint32_t group_priority_mask()
+{
+    uint32_t prigroup = (*(volatile uint32_t *)0xE000ED0CUL >> 8) & 7;
+    return (0xFFUL << (prigroup + 1)) & 0xFF;
+}
+
+/*
+ * With priority grouping the level must have a non-zero group priority:
+ * otherwise BASEPRI masks all interrupts (e.g. NVIC_PRIORITYGROUP_2 with
+ * scmRTOS_OS_DI_LEVEL < 4 on a 4-bit core).
+ */
+void check_os_di_level()
+{
+    if((scmRTOS_OS_DI_BASEPRI & group_priority_mask()) == 0)
+        scmRTOS_ISR_PRIORITY_ERROR();
+}
+}
+
+/*
+ * Check that the active exception may use OS services: its group
+ * priority must not be higher than scmRTOS_OS_DI_LEVEL.
+ */
+void OS::os_check_isr_priority()
+{
+    uint32_t exc;
+    asm volatile ("MRS %0, IPSR" : "=r"(exc));
+
+    uint32_t prio;
+    if(exc >= 16)                                   // external interrupt: NVIC_IPR
+        prio = ((volatile uint8_t *)0xE000E400UL)[exc - 16];
+    else if(exc >= 4)                               // configurable system handler: SCB_SHPR
+        prio = ((volatile uint8_t *)0xE000ED18UL)[exc - 4];
+    else if(exc == 0)                               // thread mode: not an ISR
+        return;
+    else                                            // NMI, HardFault: fixed negative priority
+    {
+        scmRTOS_ISR_PRIORITY_ERROR();
+        return;
+    }
+
+    uint32_t group_mask = group_priority_mask();
+
+    if((prio & group_mask) < (scmRTOS_OS_DI_BASEPRI & group_mask))
+        scmRTOS_ISR_PRIORITY_ERROR();
+}
+
+#endif
+
+/*
  * Some Cortex-MX registers and constants.
  */
 namespace
@@ -176,6 +245,10 @@ enum
 
 extern "C" NORETURN void os_start(stack_item_t *sp)
 {
+#if (scmRTOS_CRITSECT_BASEPRI == 1) && (scmRTOS_CHECK_ISR_PRIORITY == 1)
+    check_os_di_level();
+#endif
+
     // Set PendSV lowest priority value
 #if (defined SHP3_WORD_ACCESS)
     SHPR3 |= (0xFF << 16);
@@ -201,6 +274,10 @@ extern "C" NORETURN void os_start(stack_item_t *sp)
         "    ISB                               \n" // Insert a barrier
         "    LDR     R1, =__init_system_timer  \n" //
         "    BLX     R1                        \n" //
+#if scmRTOS_CRITSECT_BASEPRI == 1
+        "    MOVS    R0, #0                    \n" // Processes run with OS interrupts unmasked
+        "    MSR     BASEPRI, R0               \n"
+#endif
         "    CPSIE   I                         \n" // Enable interrupts at processor level
         "    BX      R4                        \n" // Jump to process exec() function
         : [stack]"+r" (sp)  // output

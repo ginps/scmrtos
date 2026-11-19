@@ -170,10 +170,139 @@ typedef uint32_t status_reg_t;
 
 //-----------------------------------------------------------------------------
 //
+//     Interrupt masking by the OS
+//
+//     By default the OS masks all interrupts (PRIMASK) in its critical
+//     sections and in the context switch ISR.
+//
+//     On ARMv7-M (Cortex-M3/M4) the OS can mask only the interrupts
+//     that use OS services, by raising BASEPRI (as the MB91 port does with
+//     ILM). To enable it, define in scmRTOS_TARGET_CFG.h:
+//
+//         #define CORE_PRIORITY_BITS    4    // __NVIC_PRIO_BITS, 4 for STM32F4
+//         #define scmRTOS_OS_DI_LEVEL   5    // first priority level masked by the OS
+//
+//     Levels are given as for NVIC_SetPriority() (preemption priority,
+//     not shifted to the register's upper bits), 0 is the highest:
+//
+//       0 .. scmRTOS_OS_DI_LEVEL-1   never masked by the OS. Such ISRs must
+//                                    not use OS services, TISRW, TCritSect
+//                                    or OS objects; their latency does not
+//                                    depend on the OS.
+//       scmRTOS_OS_DI_LEVEL .. max   masked in OS critical sections; such
+//                                    ISRs may use OS services (with TISRW).
+//
+//     The two lowest levels are used by the OS itself (system timer and
+//     PendSV), so 1 <= scmRTOS_OS_DI_LEVEL <= 2^CORE_PRIORITY_BITS - 2.
+//     Priority grouping: BASEPRI compares only the group (preemption)
+//     priority, so with subpriority bits the subpriority of the level is
+//     ignored. NVIC_PRIORITYGROUP_4 (no subpriority) is recommended.
+//
+//     Cortex-M7 r0p1 (e.g. STM32F74x/F75x) has erratum 837070: a write to
+//     BASEPRI may take effect one instruction late. Define
+//     scmRTOS_CM7_R0P1_ERRATUM_837070 to 1 for the workaround.
+//
+//     enable_interrupts()/disable_interrupts() always control all
+//     interrupts (PRIMASK); the OS itself does not use them in this mode.
+//
+#if (defined scmRTOS_OS_DI_LEVEL)
+
+#if (__CORE__ == __ARM6M__)
+#error "scmRTOS_OS_DI_LEVEL: ARMv6-M (Cortex-M0(+)/M1) has no BASEPRI register."
+#endif
+
+#if (!defined CORE_PRIORITY_BITS)
+#error "scmRTOS_OS_DI_LEVEL requires CORE_PRIORITY_BITS (number of implemented priority bits, 4 for STM32F4)."
+#endif
+
+#if (CORE_PRIORITY_BITS < 2) || (CORE_PRIORITY_BITS > 8)
+#error "CORE_PRIORITY_BITS must be in range 2..8."
+#endif
+
+#if (scmRTOS_OS_DI_LEVEL < 1) || (scmRTOS_OS_DI_LEVEL > ((1 << (CORE_PRIORITY_BITS)) - 2))
+#error "scmRTOS_OS_DI_LEVEL must be in range 1 .. 2^CORE_PRIORITY_BITS - 2."
+#endif
+
+#define scmRTOS_CRITSECT_BASEPRI  1
+
+// BASEPRI value: level shifted to the implemented (upper) priority bits
+#define scmRTOS_OS_DI_BASEPRI   (((scmRTOS_OS_DI_LEVEL) << (8 - (CORE_PRIORITY_BITS))) & 0xFF)
+
+#else
+
+#define scmRTOS_CRITSECT_BASEPRI  0
+
+#endif // scmRTOS_OS_DI_LEVEL
+
+#ifndef scmRTOS_CM7_R0P1_ERRATUM_837070
+#define scmRTOS_CM7_R0P1_ERRATUM_837070 0
+#endif
+
+#ifndef scmRTOS_CHECK_ISR_PRIORITY
+#define scmRTOS_CHECK_ISR_PRIORITY  scmRTOS_DEBUG_ENABLE
+#endif
+
+//-----------------------------------------------------------------------------
+//
 //     Interrupt and Interrupt Service Routines support
+//
+//     enable_interrupts()/disable_interrupts() - all interrupts (PRIMASK).
+//
+//     enable_os_interrupts()/disable_os_interrupts() and
+//     get_interrupt_state()/set_interrupt_state() - interrupts masked by
+//     the OS: PRIMASK by default, BASEPRI with scmRTOS_OS_DI_LEVEL.
 //
 #define enable_interrupts() asm volatile ("cpsie i" ::: "memory")
 #define disable_interrupts() asm volatile ("cpsid i" ::: "memory")
+
+#if scmRTOS_CRITSECT_BASEPRI == 1
+
+INLINE void set_interrupt_state(status_reg_t status)
+{
+    asm volatile ("MSR BASEPRI, %0" : : "r"(status) : "memory");
+}
+
+INLINE status_reg_t get_interrupt_state()
+{
+    status_reg_t sr;
+    asm volatile ("MRS %0, BASEPRI" : "=r"(sr) : : "memory");
+    return sr;
+}
+
+// BASEPRI_MAX only raises the mask level, so nesting inside a section
+// with a higher mask level (or in a high priority ISR) changes nothing.
+INLINE void disable_os_interrupts()
+{
+#if scmRTOS_CM7_R0P1_ERRATUM_837070 == 1
+    // PRIMASK is restored, not just cleared: the caller may have set it
+    status_reg_t primask;
+    asm volatile (
+        "MRS     %0, PRIMASK    \n"
+        "CPSID   I              \n"
+        "MSR     BASEPRI_MAX, %1\n"
+        "ISB                    \n"
+        "MSR     PRIMASK, %0    \n"
+        : "=&r"(primask) : "r"(scmRTOS_OS_DI_BASEPRI) : "memory"
+    );
+#else
+    asm volatile (
+        "MSR     BASEPRI_MAX, %0\n"
+        "ISB                    \n"
+        : : "r"(scmRTOS_OS_DI_BASEPRI) : "memory"
+    );
+#endif
+}
+
+INLINE void enable_os_interrupts()
+{
+    asm volatile (
+        "MSR     BASEPRI, %0    \n"
+        "ISB                    \n"
+        : : "r"(0) : "memory"
+    );
+}
+
+#else  // scmRTOS_CRITSECT_BASEPRI == 0
 
 INLINE void set_interrupt_state(status_reg_t status)
 {
@@ -187,9 +316,14 @@ INLINE void set_interrupt_state(status_reg_t status)
 INLINE status_reg_t get_interrupt_state()
 {
     status_reg_t sr;
-    asm volatile ("MRS %0, PRIMASK" : "=r"(sr) : : "memory" );
+    asm volatile ("MRS %0, PRIMASK" : "=r"(sr) : : "memory");
     return sr;
 }
+
+INLINE void disable_os_interrupts() { disable_interrupts(); }
+INLINE void enable_os_interrupts()  { enable_interrupts();  }
+
+#endif // scmRTOS_CRITSECT_BASEPRI
 
 //-----------------------------------------------------------------------------
 //
@@ -200,7 +334,7 @@ INLINE status_reg_t get_interrupt_state()
 class TCritSect
 {
 public:
-    INLINE TCritSect () : StatusReg(get_interrupt_state()) { disable_interrupts(); }
+    INLINE TCritSect () : StatusReg(get_interrupt_state()) { disable_os_interrupts(); }
     INLINE ~TCritSect() { set_interrupt_state(StatusReg); }
 
 private:
@@ -215,7 +349,7 @@ private:
 //   enabled nested interrupts.
 //   User can define own macros using user-defined TCritSect capabilities.
 //
-//   Cortex-M have nested interrupts but interrupts are disabled
+//   Cortex-M have nested interrupts but OS interrupts are masked
 //   during context switch ISR. So, critical section is needed
 //   for system timer routine and not needed for context switcher.
 //
@@ -270,8 +404,8 @@ INLINE OS::TProcessMap get_prio_tag(const uint_fast8_t pr) { return static_cast<
 
 namespace OS
 {
-    INLINE void enable_context_switch()  { enable_interrupts(); }
-    INLINE void disable_context_switch() { disable_interrupts(); }
+    INLINE void enable_context_switch()  { enable_os_interrupts(); }
+    INLINE void disable_context_switch() { disable_os_interrupts(); }
 }
 
 //------------------------------------------------------------------------------
@@ -317,6 +451,17 @@ namespace OS
 //      DESCRIPTION:
 //
 //
+#if (scmRTOS_CRITSECT_BASEPRI == 1) && (scmRTOS_CHECK_ISR_PRIORITY == 1)
+//  Called by TISRW. Stops on an ISR whose priority is above
+//  scmRTOS_OS_DI_LEVEL: the OS does not mask it, so it must not use
+//  OS services. os_start() also stops if, with the current priority
+//  grouping, the level falls into group priority 0 (the OS would then
+//  mask all interrupts). Enabled by scmRTOS_CHECK_ISR_PRIORITY (default:
+//  scmRTOS_DEBUG_ENABLE). Default reaction: endless loop;
+//  define scmRTOS_ISR_PRIORITY_ERROR() in scmRTOS_TARGET_CFG.h to change.
+void os_check_isr_priority();
+#endif
+
 class TISRW
 {
 public:
@@ -327,6 +472,9 @@ private:
     //-----------------------------------------------------
     INLINE void ISR_Enter()
     {
+    #if (scmRTOS_CRITSECT_BASEPRI == 1) && (scmRTOS_CHECK_ISR_PRIORITY == 1)
+        os_check_isr_priority();
+    #endif
         TCritSect cs;
         Kernel.ISR_NestCount = Kernel.ISR_NestCount + 1;
     }

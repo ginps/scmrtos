@@ -47,6 +47,7 @@
 //*     Cortex-M0/M3/M4(F) IAR port by Yury A. Yakimov aka haker_fox, Copyright (c) 2020-2021
 
     EXTERN os_context_switch_hook
+    EXTERN os_context_switch_basepri
 
     PUBLIC PendSV_Handler
 
@@ -64,6 +65,15 @@
  * Since PendSV interrupt has the lowest priority in the system (set by os_start() below),
  * we can be sure that it will run only when no other exception or interrupt is active, and
  * therefore safe to assume that context being switched out was using the process stack (PSP).
+ *
+ * Interrupt masking on ARMv7-M is selected by os_context_switch_basepri
+ * (os_target.cpp), because the project configuration is not visible here:
+ *   0     - mask all interrupts (PRIMASK), the default;
+ *   not 0 - raise BASEPRI to the OS level (scmRTOS_OS_DI_LEVEL): interrupts
+ *           with higher priority are not masked and may preempt the
+ *           context switch, they must not use OS services.
+ * PendSV has the lowest priority, so it runs only when PRIMASK == 0 and
+ * BASEPRI == 0; clearing both on exit restores the state on entry.
  *
  * Defines to determine ach:
  * M0(+) core     : __CORE__ == __ARM6M__
@@ -107,7 +117,13 @@ PendSV_Handler
     POP     {PC}               // Return to saved exc_return. Exception return will restore remaining context
 #elif (((__CORE__ == __ARM7M__) || (__CORE__ == __ARM7EM__)) && !defined(__ARMVFP__))
     // M3/M4 cores without FPU
-    CPSID   I                  // Prevent interruption during context switch
+    LDR     R1, =os_context_switch_basepri  // Prevent interruption during context switch:
+    LDR     R1, [R1]           // 0 - PRIMASK mode, otherwise BASEPRI value
+    CBNZ    R1, PendSV_mask
+    CPSID   I                  // PRIMASK mode
+PendSV_mask
+    MSR     BASEPRI, R1        // BASEPRI mode (no effect if R1 == 0)
+    ISB
     MRS     R0, PSP            // PSP is process stack pointer
     STMDB   R0!, {R4-R11}      // Save remaining regs r4-11 on process stack
 
@@ -119,11 +135,19 @@ PendSV_Handler
 // R0 is new process SP;
     LDMIA   R0!, {R4-R11}      // Restore r4-11 from new process stack
     MSR     PSP, R0            // Load PSP with new process SP
+    MOVS    R1, #0
+    MSR     BASEPRI, R1
     CPSIE   I
     POP     {PC}               // Return to saved exc_return. Exception return will restore remaining context
 #else
     // Core with FPU (cortex-M4F)
-    CPSID     I                  // Prevent interruption during context switch
+    LDR     R1, =os_context_switch_basepri  // Prevent interruption during context switch:
+    LDR     R1, [R1]           // 0 - PRIMASK mode, otherwise BASEPRI value
+    CBNZ    R1, PendSV_mask
+    CPSID   I                  // PRIMASK mode
+PendSV_mask
+    MSR     BASEPRI, R1        // BASEPRI mode (no effect if R1 == 0)
+    ISB
     MRS       R0, PSP            // PSP is process stack pointer
     TST       LR, #0x10          // exc_return[4]=0? (it means that current process
     IT        EQ                 // has active floating point context)
@@ -140,7 +164,9 @@ PendSV_Handler
     IT        EQ                 // has active floating point context)
     VLDMIAEQ  R0!, {S16-S31}     // if so - restore it.
     MSR       PSP, R0            // Load PSP with new process SP
-    CPSIE     I
+    MOVS    R1, #0
+    MSR     BASEPRI, R1
+    CPSIE   I
     BX        LR                 // Return to saved exc_return. Exception return will restore remaining context
 #endif
 
