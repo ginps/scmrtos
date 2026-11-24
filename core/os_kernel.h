@@ -123,6 +123,8 @@ namespace OS
         uint_fast8_t          CurProcPriority;
         volatile TProcessMap  ReadyProcessMap;
         volatile uint_fast8_t ISR_NestCount;
+        bool                  Running;      // set by run(); false (zero) also before
+                                            // the constructor of Kernel has run
 
     private:
         static TBaseProcess*  ProcessTable[PROCESS_COUNT];
@@ -143,6 +145,7 @@ namespace OS
     INLINE TKernel() : CurProcPriority( MAX_PROCESS_COUNT )           // 'MAX_PROCESS_COUNT' means that OS not run yet
                      , ReadyProcessMap( (1ul << (PROCESS_COUNT)) - 1) // set all processes ready
                      , ISR_NestCount(0)
+                     , Running(false)
     {
     }
 
@@ -652,13 +655,17 @@ INLINE void OS::run()
 #endif
 
     Kernel.CurProcPriority = p;
+    Kernel.Running = true;
     stack_item_t *sp = Kernel.ProcessTable[p]->StackPointer;
     os_start(sp);
 }
 //-----------------------------------------------------------------------------
 INLINE bool OS::os_running()
 {
-    return Kernel.CurProcPriority < MAX_PROCESS_COUNT;
+    // Not CurProcPriority < MAX_PROCESS_COUNT: before the constructor of
+    // Kernel has run (a global constructor in another translation unit)
+    // CurProcPriority is 0, which would read as "running"
+    return Kernel.Running;
 }
 //-----------------------------------------------------------------------------
 
