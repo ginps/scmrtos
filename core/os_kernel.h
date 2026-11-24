@@ -670,6 +670,18 @@ bool OS::TBaseProcess::is_suspended() const
 //-----------------------------------------------------------------------------
 INLINE void OS::run()
 {
+    // Every priority must have its process: the system timer, the scheduler
+    // and the context switch dereference ProcessTable[] without a check. An
+    // empty slot means scmRTOS_PROCESS_COUNT is larger than the number of
+    // process objects - a configuration error, stop here rather than jump
+    // through a null pointer later (OS::safe_run() reports it at compile time).
+    for(uint_fast8_t i = 0; i < PROCESS_COUNT; ++i)
+    {
+        // a volatile read: an empty loop without side effects may be removed
+        while(!*static_cast<TBaseProcess * const volatile *>(&Kernel.ProcessTable[i]))
+        {
+        }
+    }
 
 #if scmRTOS_SUSPENDED_PROCESS_ENABLE != 0
     Kernel.ReadyProcessMap = TBaseProcess::SuspendedProcessMap;
