@@ -160,12 +160,14 @@ void usr::ring_buffer<T, Size, S>::read(T* data, const S cnt)
 template<typename T, uint16_t Size, typename S>
 T& usr::ring_buffer<T, Size, S>::operator[](const S index)
 {
-    S x = First + index;
+    // First + index may not fit into S (Size 200, uint8_t: 150 + 120 wraps
+    // to 14): compare with the distance to the end of the array instead
+    const S ToEnd = Size - First;
 
-    if(x < Size)
-        return Buf[x];
+    if(index < ToEnd)
+        return Buf[First + index];
     else
-        return Buf[x - Size];
+        return Buf[index - ToEnd];
 }
 
 //------------------------------------------------------------------------------
