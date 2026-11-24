@@ -139,6 +139,23 @@ reports.
 | N8 - round-robin wakes the first process | 1 | reproduced | reproduced | reproduced |
 | N9 - `os_running()` before the kernel constructor | 1 | reproduced | reproduced | reproduced |
 
+Tests added together with the fixes for develop (`test_fixes.cpp`,
+`test_timer.cpp`; on develop @ 62f3f96 without the fixes):
+
+| Defect | Tests | develop @ 62f3f96 |
+| --- | --- | --- |
+| 7 - `channel::write()`/`read()` of more than `Size` items | 2 | reproduced |
+| 8 - `terminate()` of the running process | 1 | reproduced (restart enabled) |
+| 9 - the idle process blocks, empty ready map | 1 | reproduced (scheme 0) |
+| 10 - services before `OS::run()` | 1 | reproduced |
+| 13 - pop from an empty `ring_buffer` | 1 | reproduced |
+| 15 - `round_robin_mgr` registration past `proc_count` | 1 | reproduced |
+| sem - `TSemaphore` initial count above the maximum | 1 | reproduced |
+| W2/W3 - `TSoftwareTimer` copy, null callback | 2 of 5 `timer` tests | reproduced |
+
+The `timer` suite (`ext/timer`) and `ut::on_idle()` (a hook called from the
+idle process) are new as well.
+
 N4 affects `TProfiler` too, which exists since v5.2.0, not only `process_profiler`.
 Defect 1 (16-bit masks) does not show on a 64-bit host; `test/target16/run.sh`
 checks it. On a tree with defect 2 the fuzz tests are marked as a known defect:

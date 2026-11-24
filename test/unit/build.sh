@@ -19,7 +19,7 @@ CXX=${CXX:-g++}
 # Sources of the tree under test; develop-only parts are detected by file
 CORE="$SRC/core/os_kernel.cpp $SRC/core/os_services.cpp"
 [ -f "$SRC/core/usrlib.cpp" ] && CORE="$CORE $SRC/core/usrlib.cpp"
-EXT_INC=""; EXT_SRC=""; TESTS="$U/test_kernel.cpp $U/test_ring_buffer.cpp $U/test_services.cpp $U/test_fuzz.cpp $U/test_atomic.cpp"
+EXT_INC=""; EXT_SRC=""; TESTS="$U/test_fixes.cpp $U/test_kernel.cpp $U/test_ring_buffer.cpp $U/test_services.cpp $U/test_fuzz.cpp $U/test_atomic.cpp"
 add_ext() { # dir source test
   if [ -d "$SRC/ext/$1" ]; then
     EXT_INC="$EXT_INC -I$SRC/ext/$1"
@@ -35,6 +35,7 @@ add_ext safe-run        ""                  test_safe_run.cpp
 add_ext round-robin     ""                  test_round_robin.cpp
 add_ext profiler        ""                  test_profiler.cpp
 add_ext watchdog        ""                  test_watchdog.cpp
+add_ext timer           timer.cpp           test_timer.cpp
 
 EXISTING=""; for t in $TESTS; do [ -f "$t" ] && EXISTING="$EXISTING $t"; done
 [ -d "$SRC/ext/semaphore" ] || set -- -DUT_V52 "$@"

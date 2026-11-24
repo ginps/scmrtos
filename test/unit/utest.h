@@ -44,6 +44,7 @@ namespace ut
     void irq(int n, fn_t handler);                             // user interrupt n (0..7) handler
     void at_end(fn_t check);                                   // runs when the test ends
     void on_systimer(fn_t hook);                               // called in every system timer interrupt
+    void on_idle(fn_t hook);                                   // called from the idle process hook
     void on_context_switch(fn_t hook);                         // called on every context switch
     void max_ticks(unsigned n);                                // tick limit, default 2000
     void use_safe_run();                                       // start with OS::safe_run() instead of OS::run()

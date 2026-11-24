@@ -37,6 +37,7 @@ namespace
     volatile bool Done[ut::PROC_COUNT];
     ut::fn_t   AtEnd        = 0;
     ut::fn_t   SysTimerHook = 0;
+    ut::fn_t   IdleHook     = 0;
     ut::fn_t   CtxSwHook    = 0;
     unsigned   MaxTicks     = 2000;
     bool       SafeRun      = false;
@@ -147,6 +148,8 @@ namespace OS
 {
     void idle_process_user_hook()
     {
+        if(IdleHook)
+            IdleHook();
         if(ut::ticks() >= MaxTicks)
         {
             for(int i = 0; i < ut::PROC_COUNT; ++i)
@@ -202,6 +205,7 @@ void ut::proc(int idx, fn_t body, TMode mode)
 void ut::irq(int n, fn_t handler)           { OS::host::set_irq_handler(n, handler); }
 void ut::at_end(fn_t check)                 { AtEnd = check; }
 void ut::on_systimer(fn_t hook)             { SysTimerHook = hook; }
+void ut::on_idle(fn_t hook)                 { IdleHook = hook; }
 void ut::on_context_switch(fn_t hook)       { CtxSwHook = hook; }
 void ut::max_ticks(unsigned n)              { MaxTicks = n; }
 void ut::use_safe_run()                     { SafeRun = true; }

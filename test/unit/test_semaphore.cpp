@@ -155,3 +155,10 @@ UT_TEST(semaphore, release_wakes_nobody_but_waiters)
     ut::proc(2, []{ OS::sleep(5); S.release(); S.release(); CHECK_EQ(S.get_count(), 1); });
     ut::at_end([]{ CHECK_TRACE("P1@5 P0@50 P4@50"); });
 }
+
+UT_TEST_DEFECT(semaphore, initial_count_above_max_is_clamped, "sem")
+{
+    static TSemaphore S(2, 5);              // initial_count > max_count
+    CHECK_EQ(S.get_count(), 2);
+    CHECK(!S.release());                    // already full
+}
