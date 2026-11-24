@@ -197,7 +197,7 @@ T usr::ring_buffer<T, Size, S>::pop_front()
     if(Count)
         return pop_item();
     else
-        return Buf[First];
+        return T();                 // empty: not a stale element left in Buf
 }
 //------------------------------------------------------------------------------
 template<typename T, uint16_t Size, typename S>
@@ -206,7 +206,7 @@ T usr::ring_buffer<T, Size, S>::pop_back()
     if(Count)
         return pop_item_back();
     else
-        return Buf[First];
+        return T();                 // empty: not a stale element left in Buf
 }
 //------------------------------------------------------------------------------
 template<typename T, uint16_t Size, typename S>
