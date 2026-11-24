@@ -68,8 +68,12 @@ public:
         }
     }
 
-    void register_process(const OS::TBaseProcess &proc, timeout_t tslot = 1)
+    // Returns false, and changes nothing, when all proc_count slots are taken.
+    bool register_process(const OS::TBaseProcess &proc, timeout_t tslot = 1)
     {
+        if(reg_idx >= proc_count)
+            return false;
+
         table[reg_idx].p = &proc;
         table[reg_idx].t = tslot;
         timers[reg_idx]  = tslot;
@@ -81,6 +85,7 @@ public:
         {
             put_off[0] = false;     // the first process stays active: the manager did not put it off
         }
+        return true;
     }
 
     INLINE void run();
