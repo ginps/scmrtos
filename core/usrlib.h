@@ -113,6 +113,13 @@ namespace usr
         //--------------------------------------------------------------
 
     private:
+        // Count, First and Last must hold values up to Size
+    #if __cplusplus >= 201103L
+        static_assert(Size <= static_cast<S>(~static_cast<S>(0)), "ring_buffer: Size does not fit into the index type S");
+    #else
+        typedef char SizeFitsIndexType[(Size <= static_cast<S>(~static_cast<S>(0))) ? 1 : -1];
+    #endif
+
         S  Count;
         S  First;
         S  Last;
