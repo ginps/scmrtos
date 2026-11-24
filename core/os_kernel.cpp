@@ -230,6 +230,12 @@ namespace OS
 
 namespace OS
 {
+    // Read in every turn of the idle loop. Without hooks the loop would have
+    // no side effects, and C++ lets the compiler assume such a loop ends:
+    // clang removes the body of exec() altogether, and the function falls
+    // through into whatever code follows it.
+    static volatile uint_fast8_t IdleSpin;
+
     template<> void TIdleProc::exec()
     {
         for(;;)
@@ -241,6 +247,7 @@ namespace OS
         #if scmRTOS_TARGET_IDLE_HOOK_ENABLE == 1
             idle_process_target_hook();
         #endif
+            (void)IdleSpin;
         }
     }
 }
