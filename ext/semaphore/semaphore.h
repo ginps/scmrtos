@@ -65,7 +65,7 @@ namespace OS
     public:
         TSemaphore(size_t max_count, size_t initial_count)
           : ProcessMap(0)
-          , Count(initial_count)
+          , Count(initial_count < max_count ? initial_count : max_count)  // never above the maximum
           , MaxCount(max_count)
         {
         }
