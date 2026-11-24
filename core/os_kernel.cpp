@@ -176,6 +176,9 @@ void TBaseProcess::sleep(timeout_t timeout)
 {
     TCritSect cs;
 
+    if(!Kernel.Running)                     // before run() there is nothing to switch to
+        return;
+
     Kernel.ProcessTable[Kernel.CurProcPriority]->Timeout = timeout;
     Kernel.set_process_unready(Kernel.CurProcPriority);
     Kernel.scheduler();

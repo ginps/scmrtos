@@ -101,6 +101,8 @@ namespace OS
         TProcessMap PrioTag = cur_proc_prio_tag();
 
         set_prio_tag(waiters_map, PrioTag);                   // put current process to wait map
+        if(!os_running())                                     // before run(): the wait cannot block, it
+            return;                                           // ends at once as if by timeout (is_waked_up())
         clr_prio_tag(ready_process_map(), PrioTag);           // remove current process from ready map
 
     #if scmRTOS_DEBUG_ENABLE == 1

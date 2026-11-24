@@ -142,9 +142,14 @@ namespace OS
     //      Functions
     //
     public:
-    INLINE TKernel() : CurProcPriority( MAX_PROCESS_COUNT )           // 'MAX_PROCESS_COUNT' means that OS not run yet
+    // Until run(), services may be called from initialization code. The
+    // "current process" is then the idle process, so that every access
+    // through CurProcPriority stays inside ProcessTable, and ISR_NestCount
+    // is 1, so that the scheduler does not switch context and TISRW_SS does
+    // not switch stacks before the OS has started.
+    INLINE TKernel() : CurProcPriority( prIDLE )
                      , ReadyProcessMap( (1ul << (PROCESS_COUNT)) - 1) // set all processes ready
-                     , ISR_NestCount(0)
+                     , ISR_NestCount(1)
                      , Running(false)
     {
     }
@@ -655,6 +660,7 @@ INLINE void OS::run()
 #endif
 
     Kernel.CurProcPriority = p;
+    Kernel.ISR_NestCount = 0;
     Kernel.Running = true;
     stack_item_t *sp = Kernel.ProcessTable[p]->StackPointer;
     os_start(sp);
