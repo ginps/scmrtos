@@ -68,7 +68,13 @@ namespace {
 // declare TBaseProcess descedant to access protected field
 struct BaseProcessHack : public TBaseProcess
 {
+    // constexpr: DebugInfo below must be constant-initialized - a constant in
+    // the image the debugger reads, not a variable filled in at start-up
+#if __cplusplus >= 201103L
+    static constexpr uint8_t get_name_offset() { return  offsetof(BaseProcessHack, Name); }
+#else
     static uint8_t get_name_offset() { return  offsetof(BaseProcessHack, Name); }
+#endif
 };
 
 } // anon namespace
