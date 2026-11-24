@@ -256,13 +256,13 @@ extern "C" NORETURN void os_start(stack_item_t *sp)
     asm volatile (
 #if (defined __SOFTFP__)  // code without FPU
         "    LDR     R4, [%[stack], #(4 * 14)] \n" // Load process entry point into R4
-        "    ADD     %[stack], #(4 * 16)       \n" // emulate context restore
+        "    ADDS    %[stack], #(4 * 16)       \n" // emulate context restore (ADDS/MOVS: Thumb-1 on M0)
 #else
         "    LDR     R4, [%[stack], #(4 * 15)] \n" // Load process entry point into R4
-        "    ADD     %[stack], #(4 * 17)       \n" // emulate context restore
+        "    ADDS    %[stack], #(4 * 17)       \n" // emulate context restore
 #endif
         "    MSR     PSP, %[stack]             \n" // store process SP to PSP
-        "    MOV     R0, #2                    \n" // set up the current (thread) mode: use PSP as stack pointer, privileged level
+        "    MOVS    R0, #2                    \n" // set up the current (thread) mode: use PSP as stack pointer, privileged level
         "    MSR     CONTROL, R0               \n"
         "    ISB                               \n" // Insert a barrier
         "    LDR     R1, =__init_system_timer  \n" //
