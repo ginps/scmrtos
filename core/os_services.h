@@ -275,9 +275,12 @@ namespace OS
         //
         //    Data transfer functions
         //
+        // write(): cnt <= Size items are written at once; more are passed on
+        // in portions as the consumers make room
         void write     (const T* data, const S cnt);
         S    write_isr (const T* data, const S cnt);
 
+        // read(): cnt > Size can never be satisfied, returns false at once
         bool read      (T* const data, const S cnt, timeout_t timeout = 0);
         S    read_isr  (T* const data, const S max_size);
 
@@ -535,13 +538,29 @@ void OS::channel<T, Size, S>::write(const T* data, const S count)
 {
     TCritSect cs;
 
-    while(pool.get_free_size() < count)
+    S rest = count;
+    while(rest > Size)
+    {
+        // more items than the channel can ever hold at once: pass them on
+        // in portions, each as large as the free space allows
+        while(!pool.get_free_size())
+            suspend(ProducersProcessMap);
+
+        const S free = pool.get_free_size();
+        const S qty  = free < rest ? free : rest;
+        pool.write(data, qty);
+        data += qty;
+        rest -= qty;
+        resume_all(ConsumersProcessMap);
+    }
+
+    while(pool.get_free_size() < rest)
     {
         // channel does not have enough space, suspend current process until data removed
         suspend(ProducersProcessMap);
     }
 
-    pool.write(data, count);
+    pool.write(data, rest);
     resume_all(ConsumersProcessMap);
 
 }
@@ -561,6 +580,9 @@ S OS::channel<T, Size, S>::write_isr(const T* data, const S count)
 template<typename T, uint16_t Size, typename S>
 bool OS::channel<T, Size, S>::read(T* const data, const S count, timeout_t timeout)
 {
+    if(count > Size)                // the channel never holds that many items
+        return false;
+
     TCritSect cs;
 
     cur_proc_timeout() = timeout;
