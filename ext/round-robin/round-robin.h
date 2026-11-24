@@ -77,6 +77,10 @@ public:
         {
             set_process_unready( proc.priority() );
         }
+        else
+        {
+            put_off[0] = false;     // the first process stays active: the manager did not put it off
+        }
     }
 
     INLINE void run();
