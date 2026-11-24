@@ -345,8 +345,9 @@ namespace OS
 
         {
             #if scmRTOS_SUSPENDED_PROCESS_ENABLE != 0
-            if ( pss == pssSuspended )
-                clr_prio_tag(SuspendedProcessMap, get_prio_tag(pr));
+            if ( pss == pssSuspended )      // a constant, not get_prio_tag(): the AVR/MSP430/STM8 ports
+                                            // read it from a table that may be not yet initialized here
+                clr_prio_tag(SuspendedProcessMap, static_cast<TProcessMap>(static_cast<TProcessMap>(1) << pr));
             #endif
         }
 
@@ -405,8 +406,9 @@ namespace OS
                            )
         {
             #if scmRTOS_SUSPENDED_PROCESS_ENABLE != 0
-            if ( pss == pssSuspended )
-                clr_prio_tag(SuspendedProcessMap, get_prio_tag(pr));
+            if ( pss == pssSuspended )      // a constant, not get_prio_tag(): the AVR/MSP430/STM8 ports
+                                            // read it from a table that may be not yet initialized here
+                clr_prio_tag(SuspendedProcessMap, static_cast<TProcessMap>(static_cast<TProcessMap>(1) << pr));
             #endif
         }
 
