@@ -77,6 +77,12 @@ namespace OS
 {
 
     const uint_fast8_t PROCESS_COUNT         = scmRTOS_PROCESS_COUNT + 1;
+
+    // Map with a bit for every process, the idle one included. Not
+    // (1ul << PROCESS_COUNT) - 1: with 31 user processes PROCESS_COUNT is 32,
+    // and a shift by the width of a 32-bit type is undefined.
+    const TProcessMap  ALL_PROCESSES_MAP     = static_cast<TProcessMap>(
+                                                   (static_cast<TProcessMap>(1) << (PROCESS_COUNT - 1)) * 2u - 1u);
     const stack_item_t STACK_DEFAULT_PATTERN = scmRTOS_STACK_PATTERN;
 
     class TBaseProcess;
@@ -148,7 +154,7 @@ namespace OS
     // is 1, so that the scheduler does not switch context and TISRW_SS does
     // not switch stacks before the OS has started.
     INLINE TKernel() : CurProcPriority( prIDLE )
-                     , ReadyProcessMap( (1ul << (PROCESS_COUNT)) - 1) // set all processes ready
+                     , ReadyProcessMap( ALL_PROCESSES_MAP )            // set all processes ready
                      , ISR_NestCount(1)
                      , Running(false)
     {
