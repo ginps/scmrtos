@@ -75,9 +75,13 @@ void OS::TBaseProcess::init_stack_frame( stack_item_t * Stack
     *(--StackPointer) = 0x12345678;                                // r0
 
 #if FPU_ENABLE
-    *(--StackPointer) = 0;                                         // fpcsr initial value
-    const size_t FPU_CONTEXT_SIZE = 32*2 + 1;                      // 32 64-bit registers + 1 dummy pop for SP alignment
-    StackPointer -= FPU_CONTEXT_SIZE ;                             // 1 32-bit FPU status register (fpcsr)
+    // RESTORE_CONTEXT: vpop {d16-d31}; vpop {d0-d15}; pop {r1, r2}; vmsr fpscr, r1.
+    // pop {r1, r2} takes r1 from the lower address, so FPSCR is the word
+    // below the alignment padding, not above it.
+    *(--StackPointer) = 0;                                         // r2: padding for 64-bit stack alignment
+    *(--StackPointer) = 0;                                         // r1: FPSCR initial value
+    const size_t FPU_REGS_SIZE = 32*2;                             // d0-d31, 32 64-bit registers
+    StackPointer -= FPU_REGS_SIZE;
 #endif
 
 #if scmRTOS_DEBUG_ENABLE == 1
