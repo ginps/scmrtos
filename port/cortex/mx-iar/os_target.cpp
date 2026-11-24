@@ -84,7 +84,10 @@ void OS::TBaseProcess::init_stack_frame( stack_item_t * Stack
     StackPointer = (stack_item_t*)((uintptr_t)Stack & 0xFFFFFFF8UL);
 
     *(--StackPointer)  = 0x01000000UL;      // xPSR
-    *(--StackPointer)  = reinterpret_cast<stack_item_t>(exec); // Entry Point
+    // Entry Point. On exception return the PC must have bit 0 clear (the Thumb
+    // state comes from xPSR.T; ARMv7-M: UNPREDICTABLE otherwise). A function
+    // address has it set, so clear it here and set it again in os_start() for BX.
+    *(--StackPointer)  = reinterpret_cast<stack_item_t>(exec) & ~static_cast<stack_item_t>(1);
 #if (!defined __ARMVFP__)    // core without FPU
     StackPointer -= 14;                     // emulate "push LR,R12,R3,R2,R1,R0,R11-R4"
 #else                       // core with FPU
@@ -190,9 +193,11 @@ extern "C" NORETURN void os_start(stack_item_t *sp)
     asm volatile (
 #if (!defined __ARMVFP__)  // code without FPU
         "    LDR     R4, [%[stack], #(4 * 14)] \n" // Load process entry point into R4
+        "    ADDS    R4, #1                    \n" // Thumb bit for BX (cleared in the frame)
         "    ADDS     %[stack], #(4 * 16)      \n" // emulate context restore
 #else
         "    LDR     R4, [%[stack], #(4 * 15)] \n" // Load process entry point into R4
+        "    ADDS    R4, #1                    \n" // Thumb bit for BX (cleared in the frame)
         "    ADDS     %[stack], #(4 * 17)      \n" // emulate context restore
 #endif
         "    MSR     PSP, %[stack]             \n" // store process SP to PSP
