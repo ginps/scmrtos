@@ -275,6 +275,7 @@ namespace OS
     #if scmRTOS_PROCESS_RESTART_ENABLE == 1
     protected:
                void reset_controls();
+        INLINE bool is_running() const { return Kernel.CurProcPriority == Priority; }
     #endif
 
     public:
@@ -329,7 +330,11 @@ namespace OS
             OS_PROCESS static void exec();
 
         #if scmRTOS_PROCESS_RESTART_ENABLE == 1
-            INLINE void terminate( void (*func)() = 0 );
+            // Restarts the process (from func, if given) and leaves it stopped
+            // until start(). Refused - returns false and changes nothing - for
+            // the running process: its stack is in use (the process itself, or
+            // an interrupt handler that preempted it).
+            INLINE bool terminate( void (*func)() = 0 );
         #endif
 
         private:
@@ -361,9 +366,12 @@ namespace OS
 
         #if scmRTOS_PROCESS_RESTART_ENABLE == 1
         template<TPriority pr, size_t stk_size, TProcessStartState pss>
-        void OS::process<pr, stk_size, pss>::terminate(void (*func)())
+        bool OS::process<pr, stk_size, pss>::terminate(void (*func)())
         {
             TCritSect cs;
+
+            if(is_running())
+                return false;
 
             reset_controls();
             init_stack_frame( &Stack[stk_size/sizeof(stack_item_t)]
@@ -372,6 +380,7 @@ namespace OS
                               , Stack
                           #endif
                             );
+            return true;
         }
         #endif // scmRTOS_RESTART_ENABLE
 
@@ -388,7 +397,7 @@ namespace OS
             OS_PROCESS static void exec();
 
         #if scmRTOS_PROCESS_RESTART_ENABLE == 1
-            INLINE void terminate(void (*func)() = 0);
+            INLINE bool terminate(void (*func)() = 0);     // see above
         #endif
 
         private:
@@ -422,9 +431,12 @@ namespace OS
 
         #if scmRTOS_PROCESS_RESTART_ENABLE == 1
         template<TPriority pr, size_t stk_size, size_t rstk_size, TProcessStartState pss>
-        void OS::process<pr, stk_size, rstk_size, pss>::terminate(void (*func)())
+        bool OS::process<pr, stk_size, rstk_size, pss>::terminate(void (*func)())
         {
             TCritSect cs;
+
+            if(is_running())
+                return false;
 
             reset_controls();
             init_stack_frame( &Stack[stk_size/sizeof(stack_item_t)]
@@ -435,6 +447,7 @@ namespace OS
                             , RStack
                         #endif
                             );
+            return true;
         }
         #endif // scmRTOS_RESTART_ENABLE
 
