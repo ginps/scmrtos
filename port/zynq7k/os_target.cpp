@@ -95,6 +95,8 @@ extern "C"
 
 bool irq_handler()
 {
+    OS::TISRW isr;                      // the handler runs "in an ISR" for the kernel:
+                                        // services called from it must not switch context
     const uint32_t INT_ID = rpa(GIC_ICCIAR);
     if (INT_ID < PS7_MAX_IRQ_ID)
     {
@@ -103,7 +105,6 @@ bool irq_handler()
     }
     wpa(GIC_ICCEOIR, INT_ID);
 
-    OS::TISRW isr;
     return isr.context_switch_pending();
 }
 

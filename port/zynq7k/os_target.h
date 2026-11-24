@@ -246,11 +246,21 @@ namespace OS
 //      PURPOSE    :   Provide access to update scheduling priority function
 //                     call
 //
+//     TISRW keeps Kernel.ISR_NestCount, as in the other ports: while it is
+//     nonzero, the scheduler does not switch context, so a service called
+//     from an interrupt handler (wake_up(), force_wake_up(), the non-_isr
+//     functions) only updates the ready map. irq_handler() wraps every
+//     handler in a TISRW and asks for the switch after the EOI, on the
+//     outermost level only.
+//
 class TISRW
 {
 public:
-    bool context_switch_pending() { return Kernel.update_sched_prio(); }
+    INLINE  TISRW() { Kernel.ISR_NestCount = Kernel.ISR_NestCount + 1; }
+    INLINE ~TISRW() { Kernel.ISR_NestCount = Kernel.ISR_NestCount - 1; }
 
+    // true: a context switch is due when this, the outermost, handler returns
+    bool context_switch_pending() { return Kernel.ISR_NestCount == 1 && Kernel.update_sched_prio(); }
 };
 
 //------------------------------------------------------------------------------
