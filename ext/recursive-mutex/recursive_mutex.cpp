@@ -63,7 +63,10 @@ void TRecursiveMutex::lock()
     else
     {
         while ( ValueTag )
+        {
             suspend(ProcessMap);
+            is_waked_up(ProcessMap);   // force_wake_up() leaves the tag in the map: drop it, wait again
+        }
         ValueTag = cur_proc_prio_tag();
         NestCount = 1;
     }

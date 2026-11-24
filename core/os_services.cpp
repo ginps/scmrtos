@@ -132,6 +132,7 @@ void OS::TMutex::lock()
     {
         // mutex already locked by another process, suspend current process
         suspend(ProcessMap);
+        is_waked_up(ProcessMap);   // force_wake_up() leaves the tag in the map: drop it, wait again
     }
     ValueTag = cur_proc_prio_tag();                     // mutex has been successfully locked
 }

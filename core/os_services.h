@@ -385,6 +385,7 @@ void OS::channel<T, Size, S>::push(const T& item)
     {
         // channel is full, suspend current process until data removed
         suspend(ProducersProcessMap);
+        is_waked_up(ProducersProcessMap);   // force_wake_up() leaves the tag in the map: drop it, wait again
     }
 
     pool.push_back(item);
@@ -400,6 +401,7 @@ void OS::channel<T, Size, S>::push_front(const T& item)
     {
         // channel is full, suspend current process until data removed
         suspend(ProducersProcessMap);
+        is_waked_up(ProducersProcessMap);   // force_wake_up() leaves the tag in the map: drop it, wait again
     }
 
     pool.push_front(item);
@@ -544,7 +546,10 @@ void OS::channel<T, Size, S>::write(const T* data, const S count)
         // more items than the channel can ever hold at once: pass them on
         // in portions, each as large as the free space allows
         while(!pool.get_free_size())
+        {
             suspend(ProducersProcessMap);
+            is_waked_up(ProducersProcessMap);   // force_wake_up() leaves the tag in the map: drop it, wait again
+        }
 
         const S free = pool.get_free_size();
         const S qty  = free < rest ? free : rest;
@@ -558,6 +563,7 @@ void OS::channel<T, Size, S>::write(const T* data, const S count)
     {
         // channel does not have enough space, suspend current process until data removed
         suspend(ProducersProcessMap);
+        is_waked_up(ProducersProcessMap);   // force_wake_up() leaves the tag in the map: drop it, wait again
     }
 
     pool.write(data, rest);
