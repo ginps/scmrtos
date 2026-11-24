@@ -272,7 +272,7 @@ extern "C" NORETURN void os_start(stack_item_t *sp)
         "   .ltorg                             \n" // To prevent assembler error "offset out of range" with LTO enabled
     	: [stack]"+r" (sp)  // output
         :                   // no input
-        : "r0", "r1", "r4"  // clobbers
+        : "r0", "r1", "r2", "r3", "r4", "r12", "lr", "cc", "memory"  // clobbers: R4 and __init_system_timer() (AAPCS caller-saved)
     );
 
     __builtin_unreachable(); // suppress compiler warning "'noreturn' func does return"

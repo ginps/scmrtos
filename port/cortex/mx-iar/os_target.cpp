@@ -205,7 +205,7 @@ extern "C" NORETURN void os_start(stack_item_t *sp)
         "    BX      R4                        \n" // Jump to process exec() function
         : [stack]"+r" (sp)  // output
         :                   // no input
-        : "r0", "r1", "r4"  // clobbers
+        : "r0", "r1", "r2", "r3", "r4", "r12", "lr", "cc", "memory"  // clobbers: R4 and __init_system_timer() (AAPCS caller-saved)
     );
 
    while(1); // suppress compiler warning "'noreturn' func does return"
