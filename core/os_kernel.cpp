@@ -176,7 +176,10 @@ void TBaseProcess::sleep(timeout_t timeout)
 {
     TCritSect cs;
 
-    if(!Kernel.Running)                     // before run() there is nothing to switch to
+    // The idle process must stay ready: with no ready process the scheduler
+    // has nothing to pick (highest_priority() of an empty map loops forever
+    // or is undefined). Before run() the idle process is the current one too.
+    if(Kernel.CurProcPriority == prIDLE)
         return;
 
     Kernel.ProcessTable[Kernel.CurProcPriority]->Timeout = timeout;
