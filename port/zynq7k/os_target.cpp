@@ -94,6 +94,14 @@ void OS::TBaseProcess::init_stack_frame( stack_item_t * Stack
 
 } // namespace OS
 //------------------------------------------------------------------------------
+//
+//    Lock/unlock system timer: the private timer keeps counting, only its
+//    interrupt is masked; a tick that comes due meanwhile is taken on unlock
+//    (the event flag stays set), as with SysTick in the Cortex-M ports.
+//
+void LOCK_SYSTEM_TIMER()   { cbpa(PTMR_CTLR_REG, PTMR_CTLR_IRQ_ENABLE_MASK); }
+void UNLOCK_SYSTEM_TIMER() { sbpa(PTMR_CTLR_REG, PTMR_CTLR_IRQ_ENABLE_MASK); }
+//------------------------------------------------------------------------------
 extern "C"
 {
 
